@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,7 +63,7 @@ func validateMediaPath(mediaPath string) error {
 }
 
 // SendMessage sends a WhatsApp message with optional media
-func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string) bridgeTypes.SendResult {
+func (c *Client) SendMessage(messageStore *database.MessageStore, recipient string, message string, mediaPath string, preview *bridgeTypes.LinkPreview) bridgeTypes.SendResult {
 	if !c.IsConnected() {
 		return bridgeTypes.SendResult{Success: false, Error: "Not connected to WhatsApp"}
 	}
@@ -140,7 +141,31 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 			mediaType = whatsmeow.MediaVideo
 			mimeType = "video/quicktime"
 
-		// Document types (for any other file type)
+		// Document types — explicit MIME so WhatsApp shows them correctly
+		// (without these, .docx etc. arrive as .bin on the recipient side).
+		case "docx":
+			mediaType = whatsmeow.MediaDocument
+			mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		case "doc":
+			mediaType = whatsmeow.MediaDocument
+			mimeType = "application/msword"
+		case "pdf":
+			mediaType = whatsmeow.MediaDocument
+			mimeType = "application/pdf"
+		case "xlsx":
+			mediaType = whatsmeow.MediaDocument
+			mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		case "xls":
+			mediaType = whatsmeow.MediaDocument
+			mimeType = "application/vnd.ms-excel"
+		case "pptx":
+			mediaType = whatsmeow.MediaDocument
+			mimeType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+		case "txt":
+			mediaType = whatsmeow.MediaDocument
+			mimeType = "text/plain"
+
+		// Fallback for any other file type
 		default:
 			mediaType = whatsmeow.MediaDocument
 			mimeType = "application/octet-stream"
@@ -218,11 +243,22 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 			}
 		}
 	} else {
-		msg.Conversation = proto.String(message)
+		msg = buildTextMessage(message, preview)
 	}
 
 	// Send message
 	sendResp, err := c.Client.SendMessage(context.Background(), recipientJID, msg)
+	if err != nil && recipientJID.Server == types.DefaultUserServer {
+		// WhatsApp's LID migration: the server rejects some PN-addressed sends
+		// (observed: error 400 on LID-migrated accounts, 2026-07-09) while the
+		// same message to the mapped @lid JID succeeds. Retry once via the
+		// store's PN→LID mapping; sends that succeeded on PN are untouched.
+		if lid, lerr := c.Store.LIDs.GetLIDForPN(context.Background(), recipientJID); lerr == nil && !lid.IsEmpty() {
+			if lidResp, lidErr := c.Client.SendMessage(context.Background(), lid, msg); lidErr == nil {
+				sendResp, err = lidResp, nil
+			}
+		}
+	}
 	if err != nil {
 		return bridgeTypes.SendResult{Success: false, Error: fmt.Sprintf("Error sending message: %v", err)}
 	}
@@ -232,7 +268,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 		recipientJID.String(),
 		c.Store.ID.User,       // Use the client's user ID as sender
 		c.Store.ID.User,       // SenderName - use our own user ID for sent messages
-		msg.GetConversation(), // Use the conversation text
+		outgoingText(msg),     // text body (conversation or extended-text)
 		sendResp.Timestamp,    // Use the Timestamp from SendResponse
 		true,                  // IsFromMe is true since we are sending this message
 		"",
@@ -609,4 +645,55 @@ func (c *Client) RequestChatHistory(chatJID string, oldestMsgID string, oldestMs
 	}
 
 	return nil
+}
+
+// buildTextMessage constructs the outgoing text message. When a valid link
+// preview is supplied it produces an ExtendedTextMessage (rich link/video
+// card); otherwise — or when the preview is invalid — it falls back to a plain
+// Conversation. Pure: no client, no network; unit-testable. A card is built
+// only when the preview has a Title and its MatchedText is a literal substring
+// of the body (whatsmeow MatchedText invariant).
+func buildTextMessage(message string, p *bridgeTypes.LinkPreview) *waE2E.Message {
+	msg := &waE2E.Message{}
+	if p == nil || p.Title == "" || p.MatchedText == "" || !strings.Contains(message, p.MatchedText) {
+		msg.Conversation = proto.String(message)
+		return msg
+	}
+	ext := &waE2E.ExtendedTextMessage{
+		Text:         proto.String(message),
+		MatchedText:  proto.String(p.MatchedText),
+		// NOTE: this whatsmeow version exposes no CanonicalURL field on
+		// ExtendedTextMessage; MatchedText + Text are sufficient for the card.
+		Title:        proto.String(p.Title),
+	}
+	if p.Description != "" {
+		ext.Description = proto.String(p.Description)
+	}
+	if p.JPEGThumbnail != "" {
+		if raw, err := base64.StdEncoding.DecodeString(p.JPEGThumbnail); err == nil && len(raw) > 0 {
+			ext.JPEGThumbnail = raw
+			if p.ThumbnailW > 0 {
+				ext.ThumbnailWidth = proto.Uint32(p.ThumbnailW)
+			}
+			if p.ThumbnailH > 0 {
+				ext.ThumbnailHeight = proto.Uint32(p.ThumbnailH)
+			}
+		}
+	}
+	if p.PreviewType == "video" {
+		ext.PreviewType = waE2E.ExtendedTextMessage_VIDEO.Enum()
+	}
+	msg.ExtendedTextMessage = ext
+	return msg
+}
+
+// outgoingText returns the human-readable body of an outgoing message for
+// storage: the Conversation text, or the ExtendedTextMessage text when a link
+// preview was used (GetConversation() is empty in that case). Media keeps the
+// prior empty-content behavior.
+func outgoingText(msg *waE2E.Message) string {
+	if c := msg.GetConversation(); c != "" {
+		return c
+	}
+	return msg.GetExtendedTextMessage().GetText()
 }
