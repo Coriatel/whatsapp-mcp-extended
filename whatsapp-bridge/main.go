@@ -165,7 +165,7 @@ func main() {
 	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
 	fmt.Println("=" + fmt.Sprintf("%150s", ""))
 	fmt.Println("Monitor sync progress:")
-	fmt.Println("  curl -H 'X-API-Key: " + apiKey + "' http://localhost:" + fmt.Sprintf("%d", cfg.APIPort) + "/api/sync-status")
+	fmt.Println("  curl -H \"X-API-Key: $API_KEY\" http://localhost:" + fmt.Sprintf("%d", cfg.APIPort) + "/api/sync-status")
 	fmt.Println("=" + fmt.Sprintf("%150s", ""))
 
 	// Periodically log sync stats

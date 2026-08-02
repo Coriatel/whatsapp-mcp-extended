@@ -16,13 +16,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache-dependency-path: whatsapp-bridge/go.sum
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # Pinned, not 'latest': golangci-lint v1 is built with Go 1.24 and
+          # cannot load a module targeting Go 1.25, which whatsmeow requires.
+          version: v2.12.2
           working-directory: whatsapp-bridge
           args: --timeout=5m
 

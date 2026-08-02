@@ -1,0 +1,29 @@
+# golangci-lint v2 configuration.
+#
+# whatsmeow requires Go >= 1.25, and the last golangci-lint v1 release (1.64.8)
+# is built with Go 1.24 and refuses to load a module targeting 1.25, so moving
+# to v2 is required. v2 changes defaults in ways unrelated to that upgrade: it
+# dropped v1's exclusion presets and folded the old stylecheck/quickfix checks
+# into staticcheck. Both are pinned back here so this gate keeps the same
+# effective scope it had under v1 instead of silently widening on an unrelated
+# dependency bump. Tightening it is a separate, deliberate change.
+version: "2"
+
+linters:
+  default: standard
+  exclusions:
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+  settings:
+    staticcheck:
+      # v1 ran SA* (staticcheck) and S1* (gosimple) by default; ST*/QF* were
+      # separate linters that were not enabled.
+      checks:
+        - SA*
+        - S1*
+    govet:
+      disable:
+        - inline
