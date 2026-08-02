@@ -50,7 +50,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send the message
-	result := s.client.SendMessage(s.messageStore, req.Recipient, req.Message, req.MediaPath)
+	result := s.client.SendMessage(s.messageStore, req.Recipient, req.Message, req.MediaPath, req.LinkPreview)
 
 	// Set response headers
 	w.Header().Set("Content-Type", "application/json")

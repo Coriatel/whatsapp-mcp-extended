@@ -67,6 +67,10 @@ func main() {
 			// Process regular messages with webhook support
 			client.HandleMessage(messageStore, webhookManager, v)
 
+		case *events.Receipt:
+			// Forward delivery/read receipts to the receipts webhook (S3)
+			client.HandleReceipt(v)
+
 		case *events.HistorySync:
 			// Process history sync events with detailed logging
 			logger.Infof("[SYNC] Starting HistorySync (Type: %v, Conversations: %d)", v.Data.SyncType, len(v.Data.Conversations))

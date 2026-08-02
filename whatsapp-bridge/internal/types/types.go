@@ -140,11 +140,26 @@ type WebhookLog struct {
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
+// LinkPreview is the optional rich link/video preview embedded into an outgoing
+// text message as an ExtendedTextMessage. Produced by the backend
+// (services/whatsapp_link_preview_payload.py). Absent/invalid => plain text.
+type LinkPreview struct {
+	MatchedText   string `json:"matched_text"`
+	CanonicalURL  string `json:"canonical_url"`
+	Title         string `json:"title"`
+	Description   string `json:"description,omitempty"`
+	JPEGThumbnail string `json:"jpeg_thumbnail,omitempty"` // base64-encoded JPEG bytes
+	ThumbnailW    uint32 `json:"thumbnail_width,omitempty"`
+	ThumbnailH    uint32 `json:"thumbnail_height,omitempty"`
+	PreviewType   string `json:"preview_type,omitempty"` // "video" (YouTube/Vimeo) | "link"
+}
+
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient string `json:"recipient"`
-	Message   string `json:"message"`
-	MediaPath string `json:"media_path,omitempty"`
+	Recipient   string       `json:"recipient"`
+	Message     string       `json:"message"`
+	MediaPath   string       `json:"media_path,omitempty"`
+	LinkPreview *LinkPreview `json:"link_preview,omitempty"`
 }
 
 // SendMessageResponse represents the response for the send message API

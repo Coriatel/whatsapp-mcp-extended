@@ -1,8 +1,12 @@
 package whatsapp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
 	"reflect"
 	"time"
 
@@ -304,4 +308,63 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 	}
 
 	c.logger.Infof("History sync complete. Stored %d messages.", syncedCount)
+}
+
+// HandleReceipt forwards WhatsApp delivery/read receipts to the configured
+// receipts webhook (transcriptor-api /api/v1/wa-receipts/webhook). It is a
+// no-op unless RECEIPTS_WEBHOOK_URL is set, so a rebuilt bridge is behaviour-
+// identical to before until the env var is configured. The backend matches by
+// message_id (our sent message's WhatsApp id); unmatched receipts are harmless.
+func (c *Client) HandleReceipt(receipt *events.Receipt) {
+	// S3 diagnostic (gated): dump the full receipt struct so we can see exactly
+	// where the matchable message id lives for the empty-MessageIDs cases.
+	if os.Getenv("RECEIPT_DEBUG") == "1" {
+		c.logger.Infof("RECEIPT_DUMP type=%v nids=%d ids=%q sender=%s chat=%s isFromMe=%v isGroup=%v full=%+v",
+			receipt.Type, len(receipt.MessageIDs), receipt.MessageIDs,
+			receipt.Sender.String(), receipt.Chat.String(),
+			receipt.IsFromMe, receipt.IsGroup, *receipt)
+	}
+	url := os.Getenv("RECEIPTS_WEBHOOK_URL")
+	if url == "" {
+		return
+	}
+	var receiptType string
+	switch receipt.Type {
+	case types.ReceiptTypeDelivered:
+		receiptType = "delivered"
+	case types.ReceiptTypeRead:
+		receiptType = "read"
+	default:
+		return // ignore sender/retry/read-self/played receipts
+	}
+	secret := os.Getenv("WA_WEBHOOK_SECRET")
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	ts := receipt.Timestamp.Unix()
+	for _, id := range receipt.MessageIDs {
+		body, err := json.Marshal(map[string]interface{}{
+			"type":         "receipt",
+			"receipt_type": receiptType,
+			"message_id":   string(id),
+			"from":         receipt.Sender.String(),
+			"timestamp":    ts,
+		})
+		if err != nil {
+			continue
+		}
+		req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if secret != "" {
+			req.Header.Set("X-Webhook-Secret", secret)
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			c.logger.Warnf("Receipt webhook POST failed for %s: %v", id, err)
+			continue
+		}
+		resp.Body.Close()
+		c.logger.Infof("Forwarded %s receipt for msg %s (status %d)", receiptType, id, resp.StatusCode)
+	}
 }

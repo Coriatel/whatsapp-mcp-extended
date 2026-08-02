@@ -1,9 +1,14 @@
 package whatsapp
 
 import (
+	"bytes"
+	"encoding/base64"
 	"os"
 	"strings"
 	"testing"
+
+	bridgeTypes "whatsapp-bridge/internal/types"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 )
 
 func TestValidateMediaPath(t *testing.T) {
@@ -81,5 +86,131 @@ func TestValidateMediaPath_TraversalAlwaysBlocked(t *testing.T) {
 	err := validateMediaPath("/app/media/../../../etc/passwd")
 	if err == nil {
 		t.Error("Path traversal should be blocked even with DISABLE_PATH_CHECK=true")
+	}
+}
+
+// ── S4 link-preview: buildTextMessage / outgoingText (pure) ──
+
+func TestBuildTextMessage_NoPreviewPlainText(t *testing.T) {
+	msg := buildTextMessage("hello https://x.com", nil)
+	if msg.GetConversation() != "hello https://x.com" {
+		t.Errorf("expected plain Conversation, got %q", msg.GetConversation())
+	}
+	if msg.GetExtendedTextMessage() != nil {
+		t.Error("expected no ExtendedTextMessage when preview is nil")
+	}
+}
+
+func TestBuildTextMessage_StandardLink(t *testing.T) {
+	p := &bridgeTypes.LinkPreview{
+		MatchedText:  "https://example.com/p",
+		CanonicalURL: "https://example.com/p",
+		Title:        "Web Page",
+		Description:  "desc",
+		PreviewType:  "link",
+	}
+	msg := buildTextMessage("see https://example.com/p", p)
+	ext := msg.GetExtendedTextMessage()
+	if ext == nil {
+		t.Fatal("expected ExtendedTextMessage")
+	}
+	if ext.GetText() != "see https://example.com/p" {
+		t.Errorf("text=%q", ext.GetText())
+	}
+	if ext.GetMatchedText() != "https://example.com/p" {
+		t.Errorf("matched=%q", ext.GetMatchedText())
+	}
+	if ext.GetTitle() != "Web Page" {
+		t.Errorf("title=%q", ext.GetTitle())
+	}
+	if ext.GetDescription() != "desc" {
+		t.Errorf("desc=%q", ext.GetDescription())
+	}
+	if ext.GetPreviewType() != waE2E.ExtendedTextMessage_NONE {
+		t.Errorf("previewType=%v want NONE", ext.GetPreviewType())
+	}
+	if msg.GetConversation() != "" {
+		t.Error("should not set Conversation when a card is built")
+	}
+}
+
+func TestBuildTextMessage_VideoPreviewType(t *testing.T) {
+	for _, url := range []string{"https://youtu.be/abc", "https://vimeo.com/123"} {
+		p := &bridgeTypes.LinkPreview{MatchedText: url, CanonicalURL: url, Title: "V", PreviewType: "video"}
+		ext := buildTextMessage("watch "+url, p).GetExtendedTextMessage()
+		if ext == nil {
+			t.Fatalf("expected ExtendedTextMessage for %s", url)
+		}
+		if ext.GetPreviewType() != waE2E.ExtendedTextMessage_VIDEO {
+			t.Errorf("%s previewType=%v want VIDEO", url, ext.GetPreviewType())
+		}
+	}
+}
+
+func TestBuildTextMessage_MatchedTextNotInBodyFallsBack(t *testing.T) {
+	p := &bridgeTypes.LinkPreview{MatchedText: "https://other.com", CanonicalURL: "https://other.com", Title: "X", PreviewType: "link"}
+	msg := buildTextMessage("body without that url https://present.com", p)
+	if msg.GetExtendedTextMessage() != nil {
+		t.Error("expected fallback to plain text when matched_text not a substring")
+	}
+	if msg.GetConversation() != "body without that url https://present.com" {
+		t.Errorf("expected plain Conversation, got %q", msg.GetConversation())
+	}
+}
+
+func TestBuildTextMessage_EmptyTitleFallsBack(t *testing.T) {
+	p := &bridgeTypes.LinkPreview{MatchedText: "https://x.com", CanonicalURL: "https://x.com", Title: "", PreviewType: "link"}
+	msg := buildTextMessage("see https://x.com", p)
+	if msg.GetExtendedTextMessage() != nil {
+		t.Error("expected fallback when title empty")
+	}
+	if msg.GetConversation() != "see https://x.com" {
+		t.Errorf("conv=%q", msg.GetConversation())
+	}
+}
+
+func TestBuildTextMessage_ValidThumbnailEmbedded(t *testing.T) {
+	raw := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02}
+	p := &bridgeTypes.LinkPreview{
+		MatchedText: "https://x.com", CanonicalURL: "https://x.com", Title: "T",
+		JPEGThumbnail: base64.StdEncoding.EncodeToString(raw),
+		ThumbnailW:    320, ThumbnailH: 180, PreviewType: "link",
+	}
+	ext := buildTextMessage("see https://x.com", p).GetExtendedTextMessage()
+	if ext == nil {
+		t.Fatal("expected ext")
+	}
+	if !bytes.Equal(ext.GetJPEGThumbnail(), raw) {
+		t.Errorf("thumbnail bytes mismatch: %v", ext.GetJPEGThumbnail())
+	}
+	if ext.GetThumbnailWidth() != 320 || ext.GetThumbnailHeight() != 180 {
+		t.Errorf("dims=%dx%d", ext.GetThumbnailWidth(), ext.GetThumbnailHeight())
+	}
+}
+
+func TestBuildTextMessage_InvalidThumbnailStillSendsCard(t *testing.T) {
+	p := &bridgeTypes.LinkPreview{
+		MatchedText: "https://x.com", CanonicalURL: "https://x.com", Title: "T",
+		JPEGThumbnail: "!!!not-base64!!!", PreviewType: "link",
+	}
+	ext := buildTextMessage("see https://x.com", p).GetExtendedTextMessage()
+	if ext == nil {
+		t.Fatal("expected card even with bad thumbnail")
+	}
+	if ext.GetJPEGThumbnail() != nil {
+		t.Errorf("expected nil thumbnail on bad base64, got %v", ext.GetJPEGThumbnail())
+	}
+	if ext.GetTitle() != "T" {
+		t.Error("card fields should still be set")
+	}
+}
+
+func TestOutgoingText(t *testing.T) {
+	if got := outgoingText(buildTextMessage("hello", nil)); got != "hello" {
+		t.Errorf("plain outgoingText=%q", got)
+	}
+	p := &bridgeTypes.LinkPreview{MatchedText: "https://x.com", CanonicalURL: "https://x.com", Title: "T"}
+	if got := outgoingText(buildTextMessage("body https://x.com", p)); got != "body https://x.com" {
+		t.Errorf("card outgoingText=%q", got)
 	}
 }

@@ -6,24 +6,28 @@ services:
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
+    container_name: wa-bridge
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: '0.5'
+          memory: 512M
+          cpus: "0.5"
     dns:
       - 8.8.8.8
       - 8.8.4.4
     ports:
-      - "0.0.0.0:8180:8080"  # Localhost only for security
+      - "127.0.0.1:8180:8080"
     volumes:
       - ./store:/app/whatsapp-bridge/store
+      - /opt/windmill-shared/wa-media:/app/media/lesson-pipeline:ro
     environment:
-      - TZ=UTC
+      - TZ=Asia/Jerusalem
       - API_KEY=${API_KEY:?API_KEY is required - see .env.example}
       - DISABLE_AUTH_CHECK=${DISABLE_AUTH_CHECK:-false}
+      - RECEIPTS_WEBHOOK_URL=${RECEIPTS_WEBHOOK_URL:-https://yafutsu.merkazneshama.co.il/api/v1/wa-receipts/webhook}
+      - RECEIPT_DEBUG=${RECEIPT_DEBUG:-0}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/api/health"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -39,18 +43,19 @@ services:
       args:
         UID: ${UID:-1000}
         GID: ${GID:-1000}
+    container_name: wa-mcp
     deploy:
       resources:
         limits:
-          memory: 2G
-          cpus: '1'
+          memory: 1G
+          cpus: "0.5"
     ports:
-      - "127.0.0.1:8081:8081"  # MCP server (localhost only)
-      - "127.0.0.1:8082:8082"  # Gradio UI (localhost only)
+      - "127.0.0.1:8181:8081"
+      - "127.0.0.1:8182:8082"
     volumes:
       - ./store:/app/store
     environment:
-      - TZ=UTC
+      - TZ=Asia/Jerusalem
       - DEBUG=true
       - GRADIO=false
       - BRIDGE_HOST=whatsapp-bridge
@@ -59,28 +64,20 @@ services:
       - whatsapp-bridge
     restart: unless-stopped
     networks:
-      - n8n_n8n_traefik_network
       - whatsapp_internal
-
-  # Legacy webhook-ui - deprecated, use web-ui instead
-  # webhook-ui:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.ui
-  #   ports:
-  #     - "127.0.0.1:8089:8080"
 
   web-ui:
     build:
       context: .
       dockerfile: Dockerfile.web-ui
+    container_name: wa-web-ui
     deploy:
       resources:
         limits:
-          memory: 300M
-          cpus: '0.5'
+          memory: 200M
+          cpus: "0.25"
     ports:
-      - "0.0.0.0:8090:8080"  # Unified Web UI (pairing + webhooks)
+      - "127.0.0.1:8190:8080"
     depends_on:
       - whatsapp-bridge
     restart: unless-stopped
@@ -88,7 +85,5 @@ services:
       - whatsapp_internal
 
 networks:
-  n8n_n8n_traefik_network:
-    external: true
   whatsapp_internal:
     driver: bridge

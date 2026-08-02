@@ -21,7 +21,10 @@ func NewMessageStore() (*MessageStore, error) {
 	}
 
 	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	// _busy_timeout=5000: wait up to 5s for a lock instead of failing instantly on
+	// contention (LA-002 inbound data-loss mitigation). go-sqlite3 applies this to every
+	// pooled connection. Does NOT change journal_mode/schema.
+	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
