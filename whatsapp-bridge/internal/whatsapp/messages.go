@@ -243,7 +243,7 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 			}
 		}
 	} else {
-		msg = buildTextMessage(message, preview)
+		msg = buildTextMessageWithHQ(message, preview, c.uploadHQThumbnail(preview))
 	}
 
 	// Send message
@@ -647,13 +647,91 @@ func (c *Client) RequestChatHistory(chatJID string, oldestMsgID string, oldestMs
 	return nil
 }
 
-// buildTextMessage constructs the outgoing text message. When a valid link
-// preview is supplied it produces an ExtendedTextMessage (rich link/video
-// card); otherwise — or when the preview is invalid — it falls back to a plain
-// Conversation. Pure: no client, no network; unit-testable. A card is built
-// only when the preview has a Title and its MatchedText is a literal substring
-// of the body (whatsmeow MatchedText invariant).
+// maxHQThumbBytes caps the decoded high-quality thumbnail. The API caps its
+// own output at ~300 KB; anything beyond this is refused rather than uploaded.
+const maxHQThumbBytes = 400 * 1024
+
+// hqUploadTimeout bounds the MediaLinkThumbnail upload so a slow media server
+// cannot stall a send; on timeout the message still goes out as a compact card.
+const hqUploadTimeout = 15 * time.Second
+
+// hqThumb carries the result of uploading the high-quality link thumbnail to
+// WhatsApp's media servers. Its presence is what makes the recipient render the
+// LARGE card instead of the compact one.
+type hqThumb struct {
+	DirectPath string
+	SHA256     []byte
+	EncSHA256  []byte
+	MediaKey   []byte
+	Width      uint32
+	Height     uint32
+}
+
+// decodeHQThumbnail decodes the base64 high-quality thumbnail. It returns nil
+// plus a human-readable reason when the value is absent, undecodable or over
+// maxHQThumbBytes, so the caller can log and fall back to the compact card.
+// Pure: no client, no network.
+func decodeHQThumbnail(b64 string) ([]byte, string) {
+	if b64 == "" {
+		return nil, "empty"
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, "invalid base64"
+	}
+	if len(raw) == 0 {
+		return nil, "empty after decode"
+	}
+	if len(raw) > maxHQThumbBytes {
+		return nil, fmt.Sprintf("too large: %d bytes > %d", len(raw), maxHQThumbBytes)
+	}
+	return raw, ""
+}
+
+// uploadHQThumbnail uploads the preview's high-quality thumbnail with
+// whatsmeow.MediaLinkThumbnail. Fail-open: every failure logs at warn and
+// returns nil, which degrades to today's compact card — never a failed send.
+func (c *Client) uploadHQThumbnail(p *bridgeTypes.LinkPreview) *hqThumb {
+	if p == nil || p.HQThumbnail == "" {
+		return nil
+	}
+	raw, reason := decodeHQThumbnail(p.HQThumbnail)
+	if reason != "" {
+		c.logger.Warnf("link preview: HQ thumbnail unusable (%s); sending compact card", reason)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hqUploadTimeout)
+	defer cancel()
+	resp, err := c.Upload(ctx, raw, whatsmeow.MediaLinkThumbnail)
+	if err != nil {
+		c.logger.Warnf("link preview: HQ thumbnail upload failed (%v); sending compact card", err)
+		return nil
+	}
+	return &hqThumb{
+		DirectPath: resp.DirectPath,
+		SHA256:     resp.FileSHA256,
+		EncSHA256:  resp.FileEncSHA256,
+		MediaKey:   resp.MediaKey,
+		Width:      p.ThumbnailW,
+		Height:     p.ThumbnailH,
+	}
+}
+
+// buildTextMessage builds the outgoing text message without an uploaded
+// thumbnail (compact card). Retained for callers and tests that have no client.
 func buildTextMessage(message string, p *bridgeTypes.LinkPreview) *waE2E.Message {
+	return buildTextMessageWithHQ(message, p, nil)
+}
+
+// buildTextMessageWithHQ constructs the outgoing text message. When a valid
+// link preview is supplied it produces an ExtendedTextMessage (rich link/video
+// card); otherwise — or when the preview is invalid — it falls back to a plain
+// Conversation. When hq is non-nil the uploaded-thumbnail fields are set too,
+// which is what promotes the card from compact to LARGE. Pure: no client, no
+// network; unit-testable. A card is built only when the preview has a Title and
+// its MatchedText is a literal substring of the body (whatsmeow MatchedText
+// invariant).
+func buildTextMessageWithHQ(message string, p *bridgeTypes.LinkPreview, hq *hqThumb) *waE2E.Message {
 	msg := &waE2E.Message{}
 	if p == nil || p.Title == "" || p.MatchedText == "" || !strings.Contains(message, p.MatchedText) {
 		msg.Conversation = proto.String(message)
@@ -678,6 +756,21 @@ func buildTextMessage(message string, p *bridgeTypes.LinkPreview) *waE2E.Message
 			if p.ThumbnailH > 0 {
 				ext.ThumbnailHeight = proto.Uint32(p.ThumbnailH)
 			}
+		}
+	}
+	// The inline JPEGThumbnail above stays as the offline/low-data placeholder;
+	// these five fields are what make the recipient render the LARGE card.
+	if hq != nil {
+		ext.ThumbnailDirectPath = proto.String(hq.DirectPath)
+		ext.ThumbnailSHA256 = hq.SHA256
+		ext.ThumbnailEncSHA256 = hq.EncSHA256
+		ext.MediaKey = hq.MediaKey
+		ext.MediaKeyTimestamp = proto.Int64(time.Now().Unix())
+		if hq.Width > 0 {
+			ext.ThumbnailWidth = proto.Uint32(hq.Width)
+		}
+		if hq.Height > 0 {
+			ext.ThumbnailHeight = proto.Uint32(hq.Height)
 		}
 	}
 	if p.PreviewType == "video" {

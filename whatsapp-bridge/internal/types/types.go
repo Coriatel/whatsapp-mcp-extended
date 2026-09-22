@@ -149,8 +149,12 @@ type LinkPreview struct {
 	Title         string `json:"title"`
 	Description   string `json:"description,omitempty"`
 	JPEGThumbnail string `json:"jpeg_thumbnail,omitempty"` // base64-encoded JPEG bytes
-	ThumbnailW    uint32 `json:"thumbnail_width,omitempty"`
-	ThumbnailH    uint32 `json:"thumbnail_height,omitempty"`
+	// HQThumbnail is the base64-encoded high-quality JPEG uploaded to
+	// WhatsApp's media servers (MediaLinkThumbnail) to get the LARGE card.
+	// Absent/invalid/oversized => today's compact card.
+	HQThumbnail string `json:"hq_thumbnail,omitempty"`
+	ThumbnailW  uint32 `json:"thumbnail_width,omitempty"`
+	ThumbnailH  uint32 `json:"thumbnail_height,omitempty"`
 	PreviewType   string `json:"preview_type,omitempty"` // "video" (YouTube/Vimeo) | "link"
 }
 

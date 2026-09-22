@@ -214,3 +214,129 @@ func TestOutgoingText(t *testing.T) {
 		t.Errorf("card outgoingText=%q", got)
 	}
 }
+
+// ── Q1 link-preview: uploaded (high-quality) thumbnail → LARGE card ──
+
+func TestBuildTextMessageWithHQ(t *testing.T) {
+	inline := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02}
+	hq := &hqThumb{
+		DirectPath: "/v/t62.1234-24/hq.enc",
+		SHA256:     []byte{1, 2, 3},
+		EncSHA256:  []byte{4, 5, 6},
+		MediaKey:   []byte{7, 8, 9},
+		Width:      600, Height: 314,
+	}
+
+	tests := []struct {
+		name        string
+		hq          *hqThumb
+		previewType string
+		wantHQ      bool
+		wantType    waE2E.ExtendedTextMessage_PreviewType
+	}{
+		{"no hq stays compact", nil, "link", false, waE2E.ExtendedTextMessage_NONE},
+		{"no hq stays compact video", nil, "video", false, waE2E.ExtendedTextMessage_VIDEO},
+		{"hq promotes to large", hq, "link", true, waE2E.ExtendedTextMessage_NONE},
+		{"hq keeps video chrome", hq, "video", true, waE2E.ExtendedTextMessage_VIDEO},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &bridgeTypes.LinkPreview{
+				MatchedText: "https://x.com", CanonicalURL: "https://x.com",
+				Title: "T", Description: "d",
+				JPEGThumbnail: base64.StdEncoding.EncodeToString(inline),
+				ThumbnailW:    600, ThumbnailH: 314,
+				PreviewType: tt.previewType,
+			}
+			ext := buildTextMessageWithHQ("see https://x.com", p, tt.hq).GetExtendedTextMessage()
+			if ext == nil {
+				t.Fatal("expected ExtendedTextMessage")
+			}
+			// The inline placeholder is kept in every case.
+			if !bytes.Equal(ext.GetJPEGThumbnail(), inline) {
+				t.Errorf("inline JPEGThumbnail mismatch: %v", ext.GetJPEGThumbnail())
+			}
+			if ext.GetPreviewType() != tt.wantType {
+				t.Errorf("previewType=%v want %v", ext.GetPreviewType(), tt.wantType)
+			}
+			if ext.GetThumbnailWidth() != 600 || ext.GetThumbnailHeight() != 314 {
+				t.Errorf("dims=%dx%d want 600x314", ext.GetThumbnailWidth(), ext.GetThumbnailHeight())
+			}
+			if !tt.wantHQ {
+				if ext.ThumbnailDirectPath != nil || ext.ThumbnailSHA256 != nil ||
+					ext.ThumbnailEncSHA256 != nil || ext.MediaKey != nil || ext.MediaKeyTimestamp != nil {
+					t.Error("uploaded-thumbnail fields must be absent without hq (compact-card regression)")
+				}
+				return
+			}
+			if ext.GetThumbnailDirectPath() != tt.hq.DirectPath {
+				t.Errorf("directPath=%q", ext.GetThumbnailDirectPath())
+			}
+			if !bytes.Equal(ext.GetThumbnailSHA256(), tt.hq.SHA256) {
+				t.Errorf("thumbnailSHA256=%v", ext.GetThumbnailSHA256())
+			}
+			if !bytes.Equal(ext.GetThumbnailEncSHA256(), tt.hq.EncSHA256) {
+				t.Errorf("thumbnailEncSHA256=%v", ext.GetThumbnailEncSHA256())
+			}
+			if !bytes.Equal(ext.GetMediaKey(), tt.hq.MediaKey) {
+				t.Errorf("mediaKey=%v", ext.GetMediaKey())
+			}
+			if ext.GetMediaKeyTimestamp() <= 0 {
+				t.Errorf("mediaKeyTimestamp=%d want > 0", ext.GetMediaKeyTimestamp())
+			}
+		})
+	}
+}
+
+func TestBuildTextMessage_HQIgnoredWhenNoCard(t *testing.T) {
+	hq := &hqThumb{DirectPath: "/v/x", SHA256: []byte{1}, EncSHA256: []byte{2}, MediaKey: []byte{3}}
+	msg := buildTextMessageWithHQ("plain body", nil, hq)
+	if msg.GetExtendedTextMessage() != nil {
+		t.Error("hq must not conjure a card when there is no preview")
+	}
+	if msg.GetConversation() != "plain body" {
+		t.Errorf("conv=%q", msg.GetConversation())
+	}
+}
+
+func TestDecodeHQThumbnail(t *testing.T) {
+	ok := base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF})
+	oversized := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xAB}, maxHQThumbBytes+1))
+	atCap := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xAB}, maxHQThumbBytes))
+
+	tests := []struct {
+		name         string
+		in           string
+		wantBytes    int
+		reasonSubstr string
+	}{
+		{"valid", ok, 3, ""},
+		{"at cap", atCap, maxHQThumbBytes, ""},
+		{"empty", "", 0, "empty"},
+		{"invalid base64", "!!!not-base64!!!", 0, "invalid base64"},
+		{"decodes to nothing", "", 0, "empty"},
+		{"over cap", oversized, 0, "too large"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, reason := decodeHQThumbnail(tt.in)
+			if tt.reasonSubstr == "" {
+				if reason != "" {
+					t.Fatalf("unexpected reason %q", reason)
+				}
+				if len(raw) != tt.wantBytes {
+					t.Errorf("len=%d want %d", len(raw), tt.wantBytes)
+				}
+				return
+			}
+			if raw != nil {
+				t.Errorf("expected nil bytes, got %d", len(raw))
+			}
+			if !strings.Contains(reason, tt.reasonSubstr) {
+				t.Errorf("reason=%q want substring %q", reason, tt.reasonSubstr)
+			}
+		})
+	}
+}
