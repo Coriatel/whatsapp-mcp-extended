@@ -373,6 +373,11 @@ func (c *Client) HandleReceipt(receipt *events.Receipt) {
 			continue
 		}
 		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			// fire-and-forget: a refused receipt is lost, so make it loud (secret mismatch, clock skew, API down)
+			c.logger.Warnf("Receipt webhook refused %s receipt for msg %s (status %d)", receiptType, id, resp.StatusCode)
+			continue
+		}
 		c.logger.Infof("Forwarded %s receipt for msg %s (status %d)", receiptType, id, resp.StatusCode)
 	}
 }
