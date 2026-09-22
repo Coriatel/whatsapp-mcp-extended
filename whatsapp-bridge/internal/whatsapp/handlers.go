@@ -3,11 +3,15 @@ package whatsapp
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"reflect"
+	"strconv"
 	"time"
 
 	"whatsapp-bridge/internal/database"
@@ -357,7 +361,11 @@ func (c *Client) HandleReceipt(receipt *events.Receipt) {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if secret != "" {
-			req.Header.Set("X-Webhook-Secret", secret)
+			// HMAC-SHA256 over "<unix-ts>.<raw body>"; the API verifies with a
+			// freshness window + replay cache (services/webhook_auth.py).
+			sentAt := strconv.FormatInt(time.Now().Unix(), 10)
+			req.Header.Set("X-Webhook-Timestamp", sentAt)
+			req.Header.Set("X-Webhook-Signature", signReceipt(secret, sentAt, body))
 		}
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -367,4 +375,12 @@ func (c *Client) HandleReceipt(receipt *events.Receipt) {
 		resp.Body.Close()
 		c.logger.Infof("Forwarded %s receipt for msg %s (status %d)", receiptType, id, resp.StatusCode)
 	}
+}
+
+// signReceipt returns "sha256=<hex(HMAC_SHA256(secret, ts + "." + body))>".
+func signReceipt(secret, ts string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts + "."))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
