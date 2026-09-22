@@ -26,6 +26,7 @@ services:
       - DISABLE_AUTH_CHECK=${DISABLE_AUTH_CHECK:-false}
       - RECEIPTS_WEBHOOK_URL=${RECEIPTS_WEBHOOK_URL:-https://yafutsu.merkazneshama.co.il/api/v1/wa-receipts/webhook}
       - RECEIPT_DEBUG=${RECEIPT_DEBUG:-0}
+      - WA_WEBHOOK_SECRET=${WA_WEBHOOK_SECRET:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/api/health"]
       interval: 60s
