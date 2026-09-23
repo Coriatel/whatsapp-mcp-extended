@@ -18,6 +18,12 @@ const defaultReconnectWindow = 10 * time.Minute
 // so an operator can tell this apart from a crash in `docker inspect`.
 const exitCodeReconnectExhausted = 3
 
+// defaultDisconnectWatchdog is the last-resort deadline for an outage that no
+// reconnect tier resolved. It has to outlast every tier below it, so the
+// default covers whatsmeow's own attempts plus the supervisor window plus
+// margin. Override with WA_DISCONNECT_WATCHDOG (e.g. "45m").
+const defaultDisconnectWatchdog = 30 * time.Minute
+
 // backoffSchedule is the unjittered wait before attempt n+1 (n is 0-based).
 // 5s, 10s, 20s, 40s, then capped at 60s.
 var backoffSchedule = []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second, 60 * time.Second}
@@ -148,6 +154,18 @@ func ReconnectWindow() time.Duration {
 		}
 	}
 	return defaultReconnectWindow
+}
+
+// DisconnectWatchdog reads WA_DISCONNECT_WATCHDOG, falling back to the default.
+// It must stay larger than ReconnectWindow, otherwise the watchdog would kill
+// the process while the supervisor is still making progress.
+func DisconnectWatchdog() time.Duration {
+	if v := os.Getenv("WA_DISCONNECT_WATCHDOG"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultDisconnectWatchdog
 }
 
 // ExitOnReconnectExhausted reports whether the process may exit itself when

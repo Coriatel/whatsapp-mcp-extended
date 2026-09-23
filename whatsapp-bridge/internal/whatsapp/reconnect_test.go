@@ -227,6 +227,44 @@ func TestReconnectWindowEnv(t *testing.T) {
 	}
 }
 
+func TestDisconnectWatchdogEnv(t *testing.T) {
+	tests := []struct {
+		name, env string
+		want      time.Duration
+	}{
+		{"unset uses default", "", defaultDisconnectWatchdog},
+		{"valid duration", "45m", 45 * time.Minute},
+		{"garbage falls back", "soon", defaultDisconnectWatchdog},
+		{"zero falls back", "0s", defaultDisconnectWatchdog},
+		{"negative falls back", "-1m", defaultDisconnectWatchdog},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("WA_DISCONNECT_WATCHDOG", tt.env)
+			if got := DisconnectWatchdog(); got != tt.want {
+				t.Errorf("DisconnectWatchdog() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestWatchdogOutlastsTheReconnectTiers is the whole point of the default: the
+// watchdog must not fire while whatsmeow or the supervisor is still working.
+// whatsmeow's own attempts run sum(n*2s) for n in 0..29, about 14.5 minutes.
+func TestWatchdogOutlastsTheReconnectTiers(t *testing.T) {
+	var whatsmeowTier time.Duration
+	for n := 0; n < 30; n++ {
+		whatsmeowTier += time.Duration(n) * 2 * time.Second
+	}
+	t.Setenv("WA_DISCONNECT_WATCHDOG", "")
+	t.Setenv("WA_RECONNECT_WINDOW", "")
+
+	tiers := whatsmeowTier + ReconnectWindow()
+	if got := DisconnectWatchdog(); got <= tiers {
+		t.Errorf("watchdog default %v does not outlast the tiers below it (%v)", got, tiers)
+	}
+}
+
 func TestExitOnExhaustedEnv(t *testing.T) {
 	tests := []struct {
 		name, env string
