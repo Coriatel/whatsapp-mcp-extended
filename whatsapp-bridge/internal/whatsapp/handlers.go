@@ -394,14 +394,11 @@ func (c *Client) HandleReceipt(receipt *events.Receipt) {
 // the phone-number JID and, for a migrated account, the LID. Either is zero
 // when the store has not been populated (not logged in yet).
 func (c *Client) ownChatJIDs() (pn, lid types.JID) {
-	if c.Client == nil || c.Store == nil {
+	if c.Client == nil {
 		return
 	}
-	if c.Store.ID != nil {
-		pn = c.Store.ID.ToNonAD()
-	}
-	lid = c.Store.LID.ToNonAD()
-	return
+	// Device.GetJID/GetLID are whatsmeow's nil-safe accessors (store/store.go).
+	return c.Store.GetJID().ToNonAD(), c.Store.GetLID().ToNonAD()
 }
 
 // classifyReceipt maps a whatsmeow receipt to the webhook receipt_type. ok is
@@ -431,11 +428,21 @@ func classifyReceipt(receipt *events.Receipt, ownPN, ownLID types.JID) (receiptT
 }
 
 // isSelfChat reports whether chat is this account's chat with itself.
+//
+// The server is matched by family rather than exactly. whatsmeow rewrites
+// hosted -> s.whatsapp.net and hosted.lid -> lid on the receipt's `from`
+// (message.go:144-147), but when the node carries a `recipient` attribute it
+// takes that JID raw (message.go:151-153), so Chat can still arrive on a hosted
+// server. Agent and device are ignored: they identify a device, not the chat.
 func isSelfChat(chat, ownPN, ownLID types.JID) bool {
-	for _, own := range []types.JID{ownPN, ownLID} {
-		if !own.IsEmpty() && !chat.IsEmpty() && chat.User == own.User && chat.Server == own.Server {
-			return true
-		}
+	if chat.IsEmpty() {
+		return false
+	}
+	switch chat.Server {
+	case types.DefaultUserServer, types.HostedServer:
+		return !ownPN.IsEmpty() && chat.User == ownPN.User
+	case types.HiddenUserServer, types.HostedLIDServer:
+		return !ownLID.IsEmpty() && chat.User == ownLID.User
 	}
 	return false
 }
