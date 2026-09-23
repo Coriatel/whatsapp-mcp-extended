@@ -38,6 +38,20 @@ type Client struct {
 	disconnectedAt      time.Time
 	autoReconnectErrors int
 
+	// Liveness + self-healing state (see connstate.go / reconnect.go)
+	lastSuccessfulSend   time.Time
+	lastReceiptAt        time.Time
+	reconnectAttempts    int
+	reconnectFailure     string
+	reconnectLastAttempt time.Time
+	loggedOut            bool
+	supervising          bool
+
+	// Seams for tests. Nil means "use the embedded whatsmeow client"; only the
+	// reconnect path goes through them, so production behaviour is unchanged.
+	connectFn    func() error
+	disconnectFn func()
+
 	// Pairing state
 	pairingMutex      sync.Mutex
 	pairingInProgress bool
@@ -117,12 +131,18 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 		count := c.autoReconnectErrors
 		c.connMu.Unlock()
 		if count >= 30 {
-			logger.Errorf("AutoReconnect: %d consecutive failures, giving up (watchdog will restart)", count)
+			logger.Errorf("AutoReconnect: %d consecutive failures, handing over to the reconnect supervisor", count)
+			// whatsmeow stops retrying once this returns false, so the supervisor
+			// takes over here. Starting it any earlier would put two reconnect
+			// drivers on the same socket, which risks a temporary ban.
+			c.SuperviseReconnect("autoreconnect_gave_up")
 			return false
 		}
 		logger.Warnf("AutoReconnect: attempt %d (%v)", count, failure)
 		return true
 	}
+
+	c.installDialer()
 
 	return c, nil
 }
@@ -484,13 +504,17 @@ func (c *Client) UnarchiveChat(chatJID string) error {
 
 // Connection state tracking methods
 
-// MarkConnected records a successful connection event.
+// MarkConnected records a successful connection event and ends the current
+// outage: reconnect_attempts is scoped to one outage, so it resets here.
 func (c *Client) MarkConnected() {
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
 	c.lastConnectedAt = time.Now()
 	c.disconnectedAt = time.Time{}
 	c.autoReconnectErrors = 0
+	c.reconnectAttempts = 0
+	c.reconnectFailure = ""
+	c.loggedOut = false
 }
 
 // MarkDisconnected records a disconnection event.

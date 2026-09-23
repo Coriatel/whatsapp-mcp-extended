@@ -400,12 +400,20 @@ type PairingStatusResponse struct {
 type ConnectionStatusResponse struct {
 	Success             bool   `json:"success"`
 	Connected           bool   `json:"connected"`
+	State               string `json:"state,omitempty"`                // connected|disconnected|logged_out|unknown
 	Linked              bool   `json:"linked"`                         // Device has valid session
 	JID                 string `json:"jid,omitempty"`                  // WhatsApp ID if linked
 	Uptime              string `json:"uptime,omitempty"`               // Process uptime
 	LastConnected       string `json:"last_connected,omitempty"`       // ISO-8601 timestamp
+	DisconnectedSince   string `json:"disconnected_since,omitempty"`   // ISO-8601 timestamp
 	DisconnectedFor     string `json:"disconnected_for,omitempty"`     // Duration string
+	LastSuccessfulSend  string `json:"last_successful_send,omitempty"` // ISO-8601 timestamp
+	LastReceipt         string `json:"last_receipt,omitempty"`         // ISO-8601 timestamp
 	AutoReconnectErrors int    `json:"auto_reconnect_errors,omitempty"`
+
+	ReconnectAttempts      int    `json:"reconnect_attempts"`                 // attempts in the current outage; always present, like /api/health
+	ReconnectFailureReason string `json:"reconnect_failure_reason,omitempty"` // classified token, never a raw error
+	ReconnectLastAttemptAt string `json:"reconnect_last_attempt_at,omitempty"`
 }
 
 // SyncStatusResponse returns current message sync state

@@ -320,6 +320,10 @@ func (c *Client) HandleHistorySync(messageStore *database.MessageStore, historyS
 // identical to before until the env var is configured. The backend matches by
 // message_id (our sent message's WhatsApp id); unmatched receipts are harmless.
 func (c *Client) HandleReceipt(receipt *events.Receipt) {
+	// Any receipt proves the socket is carrying real traffic, independent of
+	// whether the receipts webhook is configured.
+	c.MarkReceipt()
+
 	// S3 diagnostic (gated): dump the full receipt struct so we can see exactly
 	// where the matchable message id lives for the empty-MessageIDs cases.
 	if os.Getenv("RECEIPT_DEBUG") == "1" {

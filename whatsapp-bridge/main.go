@@ -88,7 +88,8 @@ func main() {
 			logger.Infof("✓ Connected to WhatsApp")
 
 		case *events.LoggedOut:
-			logger.Warnf("✗ Device logged out - please scan QR code to log in again")
+			client.MarkLoggedOut()
+			logger.Errorf("✗ Device logged out - please scan QR code to log in again")
 
 		case *events.PairSuccess:
 			logger.Infof("✓ Phone pairing successful!")
@@ -100,38 +101,55 @@ func main() {
 
 		case *events.KeepAliveTimeout:
 			logger.Warnf("⚠ KeepAlive timeout (errors: %d)", v.ErrorCount)
-			if v.ErrorCount >= 3 {
-				logger.Errorf("KeepAlive: %d consecutive failures, forcing disconnect+reconnect", v.ErrorCount)
-				client.Disconnect()
-				go func() {
-					time.Sleep(2 * time.Second)
-					if err := client.Client.Connect(); err != nil {
-						logger.Errorf("Reconnect after KeepAlive failure: %v", err)
-					}
-				}()
-			}
+			client.OnKeepAliveTimeout(v.ErrorCount)
 
 		case *events.StreamError:
 			logger.Errorf("✗ Stream error: %v", v.Code)
 
 		case *events.Disconnected:
 			client.MarkDisconnected()
-			logger.Warnf("⚠ Disconnected from WhatsApp - attempting reconnect")
+			// whatsmeow already launched autoReconnect for this event (client.go
+			// onDisconnect), so the supervisor deliberately stays out until that
+			// gives up - see AutoReconnectHook.
+			logger.Warnf("⚠ Disconnected from WhatsApp - whatsmeow autoreconnect running")
 		}
 	})
 
-	// Connection watchdog: exit process if disconnected >3 min (forces container restart)
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			_, _, discAt, _ := client.ConnectionState()
-			if !discAt.IsZero() && time.Since(discAt) > 3*time.Minute {
-				logger.Errorf("WATCHDOG: disconnected for %v, exiting to force container restart", time.Since(discAt).Round(time.Second))
-				os.Exit(1)
+	// Three reconnect tiers run in order, each taking over only when the one
+	// before it is done. The watchdog is the last of them and must never
+	// pre-empt the others:
+	//
+	//  1. whatsmeow autoReconnect - the events.Disconnected path. Up to 30
+	//     attempts on a growing delay, roughly 14 minutes in total, after which
+	//     AutoReconnectHook returns false and hands over to tier 2.
+	//  2. the supervisor - the keepalive and startup paths, and whatever tier 1
+	//     gave up on. Bounded by WA_RECONNECT_WINDOW (default 10m); on
+	//     exhaustion it logs RECONNECT_WINDOW_EXHAUSTED and exits 3.
+	//  3. this watchdog - the backstop for an outage no tier above resolved or
+	//     even noticed. WA_DISCONNECT_WATCHDOG (default 30m) is sized to outlast
+	//     tier 1 plus tier 2 plus margin, so reaching it means every recovery
+	//     path failed and only a container restart is left.
+	//
+	// WA_EXIT_ON_RECONNECT_EXHAUSTED=0 opts out of every process exit, so it
+	// disables this watchdog too - otherwise the opt-out would be a lie.
+	if whatsapp.ExitOnReconnectExhausted() {
+		watchdogLimit := whatsapp.DisconnectWatchdog()
+		logger.Infof("Reconnect tiers: whatsmeow autoreconnect -> supervisor %v -> watchdog %v (exit)",
+			whatsapp.ReconnectWindow(), watchdogLimit)
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				_, _, discAt, _ := client.ConnectionState()
+				if !discAt.IsZero() && time.Since(discAt) > watchdogLimit {
+					logger.Errorf("WATCHDOG: disconnected for %v, exiting to force container restart", time.Since(discAt).Round(time.Second))
+					os.Exit(1)
+				}
 			}
-		}
-	}()
+		}()
+	} else {
+		logger.Warnf("WATCHDOG disabled (WA_EXIT_ON_RECONNECT_EXHAUSTED=0): the bridge will never exit on its own")
+	}
 
 	// Periodic presence ping every 3 min to keep WhatsApp session active
 	go func() {
@@ -157,6 +175,10 @@ func main() {
 	go func() {
 		if err := client.Connect(); err != nil {
 			logger.Errorf("Failed to connect to WhatsApp: %v", err)
+			// A failed first connect used to leave the bridge idle forever with
+			// /api/health reporting nothing; hand it to the supervisor instead.
+			client.MarkDisconnected()
+			client.SuperviseReconnect("startup_connect_failed")
 		} else {
 			fmt.Println("\n✓ Connected to WhatsApp!")
 		}
