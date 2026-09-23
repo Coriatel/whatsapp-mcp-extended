@@ -336,26 +336,30 @@ func (c *Client) HandleReceipt(receipt *events.Receipt) {
 	if url == "" {
 		return
 	}
-	var receiptType string
-	switch receipt.Type {
-	case types.ReceiptTypeDelivered:
-		receiptType = "delivered"
-	case types.ReceiptTypeRead:
-		receiptType = "read"
-	default:
-		return // ignore sender/retry/read-self/played receipts
+	ownPN, ownLID := c.ownChatJIDs()
+	receiptType, self, ok := classifyReceipt(receipt, ownPN, ownLID)
+	if !ok {
+		return
 	}
 	secret := os.Getenv("WA_WEBHOOK_SECRET")
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	ts := receipt.Timestamp.Unix()
+	selfSuffix := ""
+	if self {
+		selfSuffix = " (self-chat)"
+	}
 	for _, id := range receipt.MessageIDs {
-		body, err := json.Marshal(map[string]interface{}{
+		payload := map[string]interface{}{
 			"type":         "receipt",
 			"receipt_type": receiptType,
 			"message_id":   string(id),
 			"from":         receipt.Sender.String(),
 			"timestamp":    ts,
-		})
+		}
+		if self {
+			payload["self"] = true
+		}
+		body, err := json.Marshal(payload)
 		if err != nil {
 			continue
 		}
@@ -382,8 +386,65 @@ func (c *Client) HandleReceipt(receipt *events.Receipt) {
 			c.logger.Warnf("Receipt webhook refused %s receipt for msg %s (status %d)", receiptType, id, resp.StatusCode)
 			continue
 		}
-		c.logger.Infof("Forwarded %s receipt for msg %s (status %d)", receiptType, id, resp.StatusCode)
+		c.logger.Infof("Forwarded %s%s receipt for msg %s (status %d)", receiptType, selfSuffix, id, resp.StatusCode)
 	}
+}
+
+// ownChatJIDs returns the JIDs that identify this account's chat with itself:
+// the phone-number JID and, for a migrated account, the LID. Either is zero
+// when the store has not been populated (not logged in yet).
+func (c *Client) ownChatJIDs() (pn, lid types.JID) {
+	if c.Client == nil {
+		return
+	}
+	// Device.GetJID/GetLID are whatsmeow's nil-safe accessors (store/store.go).
+	return c.Store.GetJID().ToNonAD(), c.Store.GetLID().ToNonAD()
+}
+
+// classifyReceipt maps a whatsmeow receipt to the webhook receipt_type. ok is
+// false for receipts that must not be forwarded.
+//
+// read-self is what WhatsApp emits when this account read a message on another
+// of its own devices (whatsmeow types/presence.go:46-47). The owner canary
+// sends to the bridge account's own number, so every canary message is a
+// self-chat: opening it on the phone produces read-self, never read, and the
+// receipt was dropped here - which is why those sends never bound a receipt.
+// A self-chat read-self is forwarded as a "read" receipt flagged self; for any
+// other chat read-self says nothing about the recipient and is still dropped.
+func classifyReceipt(receipt *events.Receipt, ownPN, ownLID types.JID) (receiptType string, self bool, ok bool) {
+	switch receipt.Type {
+	case types.ReceiptTypeDelivered:
+		return "delivered", false, true
+	case types.ReceiptTypeRead:
+		return "read", false, true
+	case types.ReceiptTypeReadSelf:
+		if isSelfChat(receipt.Chat, ownPN, ownLID) {
+			return "read", true, true
+		}
+		return "", false, false
+	default:
+		return "", false, false
+	}
+}
+
+// isSelfChat reports whether chat is this account's chat with itself.
+//
+// The server is matched by family rather than exactly. whatsmeow rewrites
+// hosted -> s.whatsapp.net and hosted.lid -> lid on the receipt's `from`
+// (message.go:144-147), but when the node carries a `recipient` attribute it
+// takes that JID raw (message.go:151-153), so Chat can still arrive on a hosted
+// server. Agent and device are ignored: they identify a device, not the chat.
+func isSelfChat(chat, ownPN, ownLID types.JID) bool {
+	if chat.IsEmpty() {
+		return false
+	}
+	switch chat.Server {
+	case types.DefaultUserServer, types.HostedServer:
+		return !ownPN.IsEmpty() && chat.User == ownPN.User
+	case types.HiddenUserServer, types.HostedLIDServer:
+		return !ownLID.IsEmpty() && chat.User == ownLID.User
+	}
+	return false
 }
 
 // signReceipt returns "sha256=<hex(HMAC_SHA256(secret, ts + "." + body))>".
