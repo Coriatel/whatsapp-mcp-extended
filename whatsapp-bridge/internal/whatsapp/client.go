@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mdp/qrterminal"
@@ -46,6 +47,13 @@ type Client struct {
 	reconnectLastAttempt time.Time
 	loggedOut            bool
 	supervising          bool
+
+	// connected mirrors the socket state for the HTTP handlers. whatsmeow's own
+	// IsConnected takes socketLock, which Connect holds for the entire dial
+	// (whatsmeow client.go ConnectContext), so reading it from a handler stalls
+	// /api/health for up to the 30s dial timeout. This flag is written only by
+	// MarkConnected and MarkDisconnected, which run on every transition.
+	connected atomic.Bool
 
 	// Seams for tests. Nil means "use the embedded whatsmeow client"; only the
 	// reconnect path goes through them, so production behaviour is unchanged.
@@ -507,6 +515,7 @@ func (c *Client) UnarchiveChat(chatJID string) error {
 // MarkConnected records a successful connection event and ends the current
 // outage: reconnect_attempts is scoped to one outage, so it resets here.
 func (c *Client) MarkConnected() {
+	c.connected.Store(true)
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
 	c.lastConnectedAt = time.Now()
@@ -519,6 +528,7 @@ func (c *Client) MarkConnected() {
 
 // MarkDisconnected records a disconnection event.
 func (c *Client) MarkDisconnected() {
+	c.connected.Store(false)
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
 	if c.disconnectedAt.IsZero() {

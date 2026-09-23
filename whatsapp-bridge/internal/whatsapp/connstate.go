@@ -117,8 +117,11 @@ func connState(connected, loggedOut, everConnected bool) string {
 }
 
 // Snapshot returns the current connection health.
+// Snapshot must never call into the whatsmeow client: a dial in progress holds
+// socketLock for its whole duration, and /api/health has to answer during
+// exactly that window.
 func (c *Client) Snapshot() ConnSnapshot {
-	connected := c.IsConnected()
+	connected := c.connected.Load()
 	c.connMu.RLock()
 	defer c.connMu.RUnlock()
 	return ConnSnapshot{
