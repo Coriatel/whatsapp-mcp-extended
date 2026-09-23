@@ -243,7 +243,13 @@ func (c *Client) SendMessage(messageStore *database.MessageStore, recipient stri
 			}
 		}
 	} else {
-		msg = buildTextMessageWithHQ(message, preview, c.uploadHQThumbnail(preview))
+		var hq *hqThumb
+		if previewUsable(message, preview) {
+			// Upload only when the card will be attached: a preview the
+			// builder would discard must not cost a media upload + timeout.
+			hq = c.uploadHQThumbnail(preview)
+		}
+		msg = buildTextMessageWithHQ(message, preview, hq)
 	}
 
 	// Send message
@@ -731,9 +737,15 @@ func buildTextMessage(message string, p *bridgeTypes.LinkPreview) *waE2E.Message
 // network; unit-testable. A card is built only when the preview has a Title and
 // its MatchedText is a literal substring of the body (whatsmeow MatchedText
 // invariant).
+// previewUsable is the ONE predicate deciding whether a link preview becomes a
+// card: a Title and a MatchedText that is a literal substring of the body.
+func previewUsable(message string, p *bridgeTypes.LinkPreview) bool {
+	return p != nil && p.Title != "" && p.MatchedText != "" && strings.Contains(message, p.MatchedText)
+}
+
 func buildTextMessageWithHQ(message string, p *bridgeTypes.LinkPreview, hq *hqThumb) *waE2E.Message {
 	msg := &waE2E.Message{}
-	if p == nil || p.Title == "" || p.MatchedText == "" || !strings.Contains(message, p.MatchedText) {
+	if !previewUsable(message, p) {
 		msg.Conversation = proto.String(message)
 		return msg
 	}

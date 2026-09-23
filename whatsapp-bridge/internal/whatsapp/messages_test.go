@@ -340,3 +340,19 @@ func TestDecodeHQThumbnail(t *testing.T) {
 		})
 	}
 }
+
+func TestPreviewUsable(t *testing.T) {
+	body := "see https://youtu.be/x"
+	if previewUsable(body, nil) {
+		t.Fatal("nil preview must not be usable")
+	}
+	if previewUsable(body, &bridgeTypes.LinkPreview{Title: "t", MatchedText: "https://other"}) {
+		t.Fatal("matched_text not in body must not be usable")
+	}
+	if previewUsable(body, &bridgeTypes.LinkPreview{Title: "", MatchedText: "https://youtu.be/x"}) {
+		t.Fatal("empty title must not be usable")
+	}
+	if !previewUsable(body, &bridgeTypes.LinkPreview{Title: "t", MatchedText: "https://youtu.be/x"}) {
+		t.Fatal("valid preview must be usable")
+	}
+}
