@@ -411,8 +411,8 @@ type ConnectionStatusResponse struct {
 	LastReceipt         string `json:"last_receipt,omitempty"`         // ISO-8601 timestamp
 	AutoReconnectErrors int    `json:"auto_reconnect_errors,omitempty"`
 
-	ReconnectAttempts      int    `json:"reconnect_attempts,omitempty"`       // attempts in the current outage
-	ReconnectFailureReason string `json:"reconnect_failure_reason,omitempty"` // last error, truncated
+	ReconnectAttempts      int    `json:"reconnect_attempts"`                 // attempts in the current outage; always present, like /api/health
+	ReconnectFailureReason string `json:"reconnect_failure_reason,omitempty"` // classified token, never a raw error
 	ReconnectLastAttemptAt string `json:"reconnect_last_attempt_at,omitempty"`
 }
 

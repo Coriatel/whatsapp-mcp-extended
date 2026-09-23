@@ -83,4 +83,7 @@ func (c *Client) installDialer() {
 	httpClient := newHTTPClientForNetwork(network)
 	c.Client.SetWebsocketHTTPClient(httpClient)
 	c.Client.SetPreLoginHTTPClient(httpClient)
+	// Media uploads and downloads resolve the same way and would hit the same
+	// AAAA-first failure, so they get the pinned transport too.
+	c.Client.SetMediaHTTPClient(httpClient)
 }

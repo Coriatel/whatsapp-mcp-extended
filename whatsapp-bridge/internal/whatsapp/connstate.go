@@ -1,6 +1,18 @@
 package whatsapp
 
-import "time"
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"net"
+	"os"
+	"syscall"
+	"time"
+
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/socket"
+)
 
 // Connection state values reported by /api/health and /api/connection.
 const (
@@ -10,9 +22,68 @@ const (
 	StateUnknown      = "unknown"
 )
 
-// maxReasonLen bounds reconnect_failure_reason so a verbose dial error (which
-// can embed URLs and headers) cannot bloat the health payload.
-const maxReasonLen = 200
+// Failure classes reported as reconnect_failure_reason. /api/health is
+// unauthenticated, so the field carries a stable token from this closed set
+// rather than a raw error string, which can embed URLs, headers and hostnames.
+// The full error stays in the logs.
+const (
+	FailureDialUnreachable = "dial_unreachable"
+	FailureDNS             = "dns"
+	FailureTimeout         = "timeout"
+	FailureTLS             = "tls"
+	FailureWebsocket       = "websocket"
+	FailureLoggedOut       = "logged_out"
+	FailureUnknown         = "unknown"
+)
+
+// classifyFailure maps a reconnect error onto one of the failure tokens.
+// Ordered most-specific first; the whatsmeow dial wrapper is checked late
+// because it wraps every other cause.
+func classifyFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, whatsmeow.ErrNotLoggedIn) {
+		return FailureLoggedOut
+	}
+
+	var recordErr tls.RecordHeaderError
+	var authErr x509.UnknownAuthorityError
+	var certErr x509.CertificateInvalidError
+	var hostErr x509.HostnameError
+	if errors.As(err, &recordErr) || errors.As(err, &authErr) || errors.As(err, &certErr) || errors.As(err, &hostErr) {
+		return FailureTLS
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return FailureDNS
+	}
+
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) ||
+		(errors.As(err, &netErr) && netErr.Timeout()) {
+		return FailureTimeout
+	}
+
+	var addrErr *net.AddrError
+	if errors.As(err, &addrErr) {
+		// "no suitable address found": the family we are pinned to was absent.
+		return FailureDialUnreachable
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ECONNREFUSED, syscall.ENETDOWN, syscall.ECONNRESET:
+			return FailureDialUnreachable
+		}
+	}
+
+	if errors.Is(err, socket.ErrDialFailed) {
+		return FailureWebsocket
+	}
+	return FailureUnknown
+}
 
 // ConnSnapshot is an immutable view of the client's connection health, taken
 // under the state mutex so the HTTP handlers never read torn values.
@@ -26,17 +97,8 @@ type ConnSnapshot struct {
 	LastReceipt            time.Time
 	AutoReconnectErrors    int
 	ReconnectAttempts      int
-	ReconnectFailureReason string
+	ReconnectFailureReason string // a classifyFailure token, never a raw error
 	ReconnectLastAttemptAt time.Time
-}
-
-// truncateReason clips an error string to maxReasonLen runes.
-func truncateReason(s string) string {
-	r := []rune(s)
-	if len(r) <= maxReasonLen {
-		return s
-	}
-	return string(r[:maxReasonLen])
 }
 
 // connState derives the reported state from the flags. Split out from Snapshot
@@ -104,7 +166,7 @@ func (c *Client) recordAttempt(attempt int, err error) {
 	c.reconnectAttempts = attempt
 	c.reconnectLastAttempt = time.Now()
 	if err != nil {
-		c.reconnectFailure = truncateReason(err.Error())
+		c.reconnectFailure = classifyFailure(err)
 	} else {
 		c.reconnectFailure = ""
 	}

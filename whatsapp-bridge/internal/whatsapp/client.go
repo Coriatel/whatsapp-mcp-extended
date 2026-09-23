@@ -47,6 +47,11 @@ type Client struct {
 	loggedOut            bool
 	supervising          bool
 
+	// Seams for tests. Nil means "use the embedded whatsmeow client"; only the
+	// reconnect path goes through them, so production behaviour is unchanged.
+	connectFn    func() error
+	disconnectFn func()
+
 	// Pairing state
 	pairingMutex      sync.Mutex
 	pairingInProgress bool
@@ -126,7 +131,11 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 		count := c.autoReconnectErrors
 		c.connMu.Unlock()
 		if count >= 30 {
-			logger.Errorf("AutoReconnect: %d consecutive failures, giving up (watchdog will restart)", count)
+			logger.Errorf("AutoReconnect: %d consecutive failures, handing over to the reconnect supervisor", count)
+			// whatsmeow stops retrying once this returns false, so the supervisor
+			// takes over here. Starting it any earlier would put two reconnect
+			// drivers on the same socket, which risks a temporary ban.
+			c.SuperviseReconnect("autoreconnect_gave_up")
 			return false
 		}
 		logger.Warnf("AutoReconnect: attempt %d (%v)", count, failure)

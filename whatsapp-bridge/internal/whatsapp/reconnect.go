@@ -89,6 +89,57 @@ func (s supervisor) run() string {
 	}
 }
 
+// keepAliveFailureThreshold is how many consecutive keepalive timeouts force a
+// reconnect. whatsmeow keeps counting past this; we act once.
+const keepAliveFailureThreshold = 3
+
+// keepAliveShouldReconnect reports whether this timeout warrants a reconnect.
+func keepAliveShouldReconnect(errCount int) bool {
+	return errCount >= keepAliveFailureThreshold
+}
+
+// OnKeepAliveTimeout handles events.KeepAliveTimeout. This is the exact path
+// that caused the 2026-09-23 two-hour outage, so it lives here under test
+// rather than inline in main().
+//
+// Client.Disconnect() sets whatsmeow's expectedDisconnect flag, so whatsmeow
+// emits no Disconnected event and starts no autoreconnect (client.go
+// onDisconnect). The supervisor is the only thing that retries this path.
+// MarkDisconnected is called here and not left to the supervisor because a
+// second supervisor is a no-op, so a timeout arriving during an existing
+// outage would otherwise never stamp disconnected_since.
+func (c *Client) OnKeepAliveTimeout(errCount int) {
+	if !keepAliveShouldReconnect(errCount) {
+		return
+	}
+	c.logger.Errorf("KeepAlive: %d consecutive failures, forcing disconnect+reconnect", errCount)
+	c.doDisconnect()
+	c.MarkDisconnected()
+	c.SuperviseReconnect("keepalive_timeout")
+}
+
+// doConnect and doDisconnect route through the test seams when set.
+func (c *Client) doConnect() error {
+	if c.connectFn != nil {
+		return c.connectFn()
+	}
+	return c.Client.Connect()
+}
+
+func (c *Client) doDisconnect() {
+	if c.disconnectFn != nil {
+		c.disconnectFn()
+		return
+	}
+	c.Client.Disconnect()
+}
+
+// hasDeviceID reports whether a paired device is still in the store. Once it is
+// gone, reconnecting cannot succeed and retrying would only burn attempts.
+func (c *Client) hasDeviceID() bool {
+	return c.Client != nil && c.Client.Store != nil && c.Client.Store.ID != nil
+}
+
 // ReconnectWindow reads WA_RECONNECT_WINDOW, falling back to the default.
 func ReconnectWindow() time.Duration {
 	if v := os.Getenv("WA_RECONNECT_WINDOW"); v != "" {
@@ -99,9 +150,10 @@ func ReconnectWindow() time.Duration {
 	return defaultReconnectWindow
 }
 
-// exitOnExhausted reports whether to exit the process when the window runs out.
-// Opt out with WA_EXIT_ON_RECONNECT_EXHAUSTED=0.
-func exitOnExhausted() bool {
+// ExitOnReconnectExhausted reports whether the process may exit itself when
+// recovery fails. Opt out with WA_EXIT_ON_RECONNECT_EXHAUSTED=0, which disables
+// both the supervisor's exit and main()'s watchdog.
+func ExitOnReconnectExhausted() bool {
 	if v := os.Getenv("WA_EXIT_ON_RECONNECT_EXHAUSTED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			return b
@@ -144,12 +196,15 @@ func (c *Client) SuperviseReconnect(reason string) {
 		}()
 
 		s := supervisor{
-			connect:   func() error { return c.Client.Connect() },
+			connect:   c.doConnect,
 			connected: c.IsConnected,
 			loggedOut: func() bool {
 				c.connMu.RLock()
-				defer c.connMu.RUnlock()
-				return c.loggedOut
+				lo := c.loggedOut
+				c.connMu.RUnlock()
+				// A cleared device store is terminal in the same way a LoggedOut
+				// event is: only re-pairing fixes it.
+				return lo || !c.hasDeviceID()
 			},
 			sleep:  time.Sleep,
 			now:    time.Now,
@@ -173,7 +228,7 @@ func (c *Client) SuperviseReconnect(reason string) {
 			c.logger.Errorf("RECONNECT_LOGGED_OUT: device session is invalid, re-pairing required (owner action)")
 		case outcomeExhausted:
 			c.logger.Errorf("RECONNECT_WINDOW_EXHAUSTED after %v (reason=%s)", window, reason)
-			if exitOnExhausted() {
+			if ExitOnReconnectExhausted() {
 				os.Exit(exitCodeReconnectExhausted)
 			}
 			c.logger.Errorf("RECONNECT_WINDOW_EXHAUSTED: exit disabled, bridge stays disconnected")

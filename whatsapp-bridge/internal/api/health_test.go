@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func TestBuildHealthPayloadFields(t *testing.T) {
 				LastSuccessfulSend:     now.Add(-3 * time.Hour),
 				LastReceipt:            now.Add(-150 * time.Minute),
 				ReconnectAttempts:      7,
-				ReconnectFailureReason: "dial tcp [2a03:2880:f23d:c7::167]:443: connect: network is unreachable",
+				ReconnectFailureReason: whatsapp.FailureDialUnreachable,
 				ReconnectLastAttemptAt: now.Add(-30 * time.Second),
 			},
 			want: map[string]interface{}{
@@ -62,6 +63,7 @@ func TestBuildHealthPayloadFields(t *testing.T) {
 				"last_successful_send":      "2026-09-23T04:00:00Z",
 				"last_receipt":              "2026-09-23T04:30:00Z",
 				"reconnect_last_attempt_at": "2026-09-23T06:59:30Z",
+				"reconnect_failure_reason":  "dial_unreachable",
 			},
 		},
 		{
@@ -116,7 +118,7 @@ func TestHealthPayloadContainsEveryRequiredField(t *testing.T) {
 		LastReceipt:            now.Add(-3 * time.Minute),
 		AutoReconnectErrors:    2,
 		ReconnectAttempts:      4,
-		ReconnectFailureReason: "boom",
+		ReconnectFailureReason: whatsapp.FailureDialUnreachable,
 		ReconnectLastAttemptAt: now,
 	}
 	got := buildHealthPayload(snap, now)
@@ -134,20 +136,87 @@ func TestHealthPayloadContainsEveryRequiredField(t *testing.T) {
 	}
 }
 
+// failureTokenRE is the closed set reconnect_failure_reason may report.
+// /api/health is unauthenticated, so a raw error string must never reach it.
+var failureTokenRE = regexp.MustCompile(`^(dial_unreachable|dns|timeout|tls|websocket|logged_out|unknown)$`)
+
+// identifierRE matches a phone number or a WhatsApp JID, neither of which may
+// appear in any /api/health value.
+var identifierRE = regexp.MustCompile(`\d{8,}|@s\.whatsapp\.net`)
+
+func TestHealthPayloadFailureReasonIsAStableToken(t *testing.T) {
+	now := time.Now()
+	for _, token := range []string{
+		whatsapp.FailureDialUnreachable, whatsapp.FailureDNS, whatsapp.FailureTimeout,
+		whatsapp.FailureTLS, whatsapp.FailureWebsocket, whatsapp.FailureLoggedOut, whatsapp.FailureUnknown,
+	} {
+		snap := whatsapp.ConnSnapshot{State: whatsapp.StateDisconnected, StartedAt: now, ReconnectFailureReason: token}
+		got, ok := buildHealthPayload(snap, now)["reconnect_failure_reason"].(string)
+		if !ok {
+			t.Fatalf("reconnect_failure_reason missing for %q", token)
+		}
+		if !failureTokenRE.MatchString(got) {
+			t.Errorf("reconnect_failure_reason = %q, outside the allowed enum", got)
+		}
+		if identifierRE.MatchString(got) {
+			t.Errorf("reconnect_failure_reason = %q, looks like a phone number or JID", got)
+		}
+	}
+}
+
+// TestIdentifierREActuallyMatches keeps the privacy guard from passing
+// vacuously: a regex that matches nothing would make the leak test useless.
+func TestIdentifierREActuallyMatches(t *testing.T) {
+	shouldMatch := []string{
+		"972501234567@s.whatsapp.net",
+		"15551234567",
+		"connected to 972501234567",
+		"@s.whatsapp.net",
+	}
+	for _, v := range shouldMatch {
+		if !identifierRE.MatchString(v) {
+			t.Errorf("identifierRE did not match %q", v)
+		}
+	}
+	shouldNotMatch := []string{
+		"2026-09-23T06:37:12Z", "2h48m0s", "dial_unreachable", "disconnected", "8m0s", "0s",
+	}
+	for _, v := range shouldNotMatch {
+		if identifierRE.MatchString(v) {
+			t.Errorf("identifierRE falsely matched %q", v)
+		}
+	}
+}
+
 func TestHealthPayloadNeverLeaksASecret(t *testing.T) {
 	now := time.Now()
 	snap := whatsapp.ConnSnapshot{
 		State:                  whatsapp.StateDisconnected,
 		StartedAt:              now,
-		ReconnectFailureReason: "dial failed",
+		ReconnectFailureReason: whatsapp.FailureDialUnreachable,
 	}
 	blob, err := json.Marshal(buildHealthPayload(snap, now))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, needle := range []string{"X-API-Key", "api_key", "secret", "token", "Authorization"} {
+	for _, needle := range []string{"X-API-Key", "api_key", "secret", "token", "Authorization", "https://", "ws/chat"} {
 		if strings.Contains(strings.ToLower(string(blob)), strings.ToLower(needle)) {
 			t.Errorf("health payload contains %q: %s", needle, blob)
+		}
+	}
+
+	// No value may carry a phone number or a WhatsApp JID. /api/health is
+	// unauthenticated, so leaking the linked account is a privacy bug.
+	for k, v := range buildHealthPayload(snap, now) {
+		sv, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if identifierRE.MatchString(sv) {
+			t.Errorf("field %q looks like a phone number or JID: %q", k, sv)
+		}
+		if k == "reconnect_failure_reason" && !failureTokenRE.MatchString(sv) {
+			t.Errorf("reconnect_failure_reason = %q, outside the allowed enum", sv)
 		}
 	}
 }

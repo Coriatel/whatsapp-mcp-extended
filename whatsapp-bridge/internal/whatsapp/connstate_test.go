@@ -1,9 +1,20 @@
 package whatsapp
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"net"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/socket"
 )
 
 func TestConnState(t *testing.T) {
@@ -27,24 +38,49 @@ func TestConnState(t *testing.T) {
 	}
 }
 
-func TestTruncateReason(t *testing.T) {
+func TestClassifyFailure(t *testing.T) {
+	opErr := func(inner error) error {
+		return &net.OpError{Op: "dial", Net: "tcp", Err: inner}
+	}
 	tests := []struct {
 		name string
-		in   string
-		want int
+		err  error
+		want string
 	}{
-		{"short passes through", "boom", 4},
-		{"exactly at the cap", strings.Repeat("a", maxReasonLen), maxReasonLen},
-		{"over the cap is clipped", strings.Repeat("a", maxReasonLen+500), maxReasonLen},
-		{"multibyte is clipped by rune", strings.Repeat("ש", maxReasonLen+10), maxReasonLen},
+		{"nil is empty", nil, ""},
+		{"the incident error", opErr(&os.SyscallError{Syscall: "connect", Err: syscall.ENETUNREACH}), FailureDialUnreachable},
+		{"host unreachable", opErr(&os.SyscallError{Syscall: "connect", Err: syscall.EHOSTUNREACH}), FailureDialUnreachable},
+		{"connection refused", opErr(&os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}), FailureDialUnreachable},
+		{"no suitable address after the IPv4 pin", opErr(&net.AddrError{Err: "no suitable address found", Addr: "aaaaonly"}), FailureDialUnreachable},
+		{"dns lookup failure", &net.DNSError{Err: "no such host", Name: "web.whatsapp.com"}, FailureDNS},
+		{"context deadline", context.DeadlineExceeded, FailureTimeout},
+		{"io deadline", os.ErrDeadlineExceeded, FailureTimeout},
+		{"tls record header", tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, FailureTLS},
+		{"unknown certificate authority", x509.UnknownAuthorityError{}, FailureTLS},
+		{"whatsmeow dial wrapper alone", fmt.Errorf("%w: handshake", socket.ErrDialFailed), FailureWebsocket},
+		{"logged out", whatsmeow.ErrNotLoggedIn, FailureLoggedOut},
+		{"anything else", errors.New("something odd"), FailureUnknown},
+		{"wrapped incident error keeps its class", fmt.Errorf("%w: %w", socket.ErrDialFailed, opErr(&os.SyscallError{Syscall: "connect", Err: syscall.ENETUNREACH})), FailureDialUnreachable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := truncateReason(tt.in)
-			if len([]rune(got)) != tt.want {
-				t.Errorf("truncateReason() length = %d runes, want %d", len([]rune(got)), tt.want)
+			if got := classifyFailure(tt.err); got != tt.want {
+				t.Errorf("classifyFailure(%v) = %q, want %q", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestClassifyFailureNeverLeaksTheError guards the reason why this function
+// exists: /api/health is unauthenticated.
+func TestClassifyFailureNeverLeaksTheError(t *testing.T) {
+	secretish := errors.New(`Get "https://web.whatsapp.com/ws/chat?token=SUPERSECRET": dial tcp [2a03::1]:443: connect: network is unreachable`)
+	got := classifyFailure(secretish)
+	if strings.Contains(got, "SUPERSECRET") || strings.Contains(got, "web.whatsapp.com") {
+		t.Fatalf("classifyFailure leaked the error: %q", got)
+	}
+	if got != FailureUnknown {
+		t.Errorf("classifyFailure() = %q, want %q", got, FailureUnknown)
 	}
 }
 
@@ -74,8 +110,11 @@ func TestStateTransitions(t *testing.T) {
 	}
 
 	c.recordAttempt(3, errTest{})
-	if c.reconnectAttempts != 3 || c.reconnectFailure == "" {
-		t.Fatalf("recordAttempt did not store state: attempts=%d reason=%q", c.reconnectAttempts, c.reconnectFailure)
+	if c.reconnectAttempts != 3 {
+		t.Fatalf("recordAttempt stored attempts=%d, want 3", c.reconnectAttempts)
+	}
+	if c.reconnectFailure != FailureUnknown {
+		t.Fatalf("recordAttempt stored reason=%q, want %q", c.reconnectFailure, FailureUnknown)
 	}
 
 	c.MarkLoggedOut()

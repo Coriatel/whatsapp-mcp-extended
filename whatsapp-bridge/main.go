@@ -101,46 +101,41 @@ func main() {
 
 		case *events.KeepAliveTimeout:
 			logger.Warnf("⚠ KeepAlive timeout (errors: %d)", v.ErrorCount)
-			if v.ErrorCount >= 3 {
-				logger.Errorf("KeepAlive: %d consecutive failures, forcing disconnect+reconnect", v.ErrorCount)
-				// Client.Disconnect() sets whatsmeow's expectedDisconnect flag, so
-				// whatsmeow emits no Disconnected event and runs no autoreconnect
-				// (whatsmeow client.go onDisconnect). The supervisor is the only
-				// thing that retries this path, and MarkDisconnected is what makes
-				// the outage visible to /api/health and the watchdog.
-				client.Disconnect()
-				client.MarkDisconnected()
-				client.SuperviseReconnect("keepalive_timeout")
-			}
+			client.OnKeepAliveTimeout(v.ErrorCount)
 
 		case *events.StreamError:
 			logger.Errorf("✗ Stream error: %v", v.Code)
 
 		case *events.Disconnected:
 			client.MarkDisconnected()
-			logger.Warnf("⚠ Disconnected from WhatsApp - attempting reconnect")
-			// Backstop behind whatsmeow's own autoreconnect, which gives up once
-			// AutoReconnectHook returns false. Single-flight, and it treats an
-			// already-restored socket as success, so the two never fight.
-			client.SuperviseReconnect("disconnected_event")
+			// whatsmeow already launched autoReconnect for this event (client.go
+			// onDisconnect), so the supervisor deliberately stays out until that
+			// gives up - see AutoReconnectHook.
+			logger.Warnf("⚠ Disconnected from WhatsApp - whatsmeow autoreconnect running")
 		}
 	})
 
 	// Connection watchdog: last-resort exit for a disconnect the reconnect
 	// supervisor never saw. Its threshold sits past the supervisor's window so
 	// the two do not race; the supervisor exits with code 3 on its own.
-	watchdogLimit := whatsapp.ReconnectWindow() + 2*time.Minute
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			_, _, discAt, _ := client.ConnectionState()
-			if !discAt.IsZero() && time.Since(discAt) > watchdogLimit {
-				logger.Errorf("WATCHDOG: disconnected for %v, exiting to force container restart", time.Since(discAt).Round(time.Second))
-				os.Exit(1)
+	// WA_EXIT_ON_RECONNECT_EXHAUSTED=0 opts out of every process exit, so it
+	// disables this watchdog too - otherwise the opt-out would be a lie.
+	if whatsapp.ExitOnReconnectExhausted() {
+		watchdogLimit := whatsapp.ReconnectWindow() + 2*time.Minute
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				_, _, discAt, _ := client.ConnectionState()
+				if !discAt.IsZero() && time.Since(discAt) > watchdogLimit {
+					logger.Errorf("WATCHDOG: disconnected for %v, exiting to force container restart", time.Since(discAt).Round(time.Second))
+					os.Exit(1)
+				}
 			}
-		}
-	}()
+		}()
+	} else {
+		logger.Warnf("WATCHDOG disabled (WA_EXIT_ON_RECONNECT_EXHAUSTED=0): the bridge will never exit on its own")
+	}
 
 	// Periodic presence ping every 3 min to keep WhatsApp session active
 	go func() {
@@ -166,6 +161,10 @@ func main() {
 	go func() {
 		if err := client.Connect(); err != nil {
 			logger.Errorf("Failed to connect to WhatsApp: %v", err)
+			// A failed first connect used to leave the bridge idle forever with
+			// /api/health reporting nothing; hand it to the supervisor instead.
+			client.MarkDisconnected()
+			client.SuperviseReconnect("startup_connect_failed")
 		} else {
 			fmt.Println("\n✓ Connected to WhatsApp!")
 		}
