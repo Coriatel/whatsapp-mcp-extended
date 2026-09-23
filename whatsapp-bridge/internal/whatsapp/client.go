@@ -38,6 +38,15 @@ type Client struct {
 	disconnectedAt      time.Time
 	autoReconnectErrors int
 
+	// Liveness + self-healing state (see connstate.go / reconnect.go)
+	lastSuccessfulSend   time.Time
+	lastReceiptAt        time.Time
+	reconnectAttempts    int
+	reconnectFailure     string
+	reconnectLastAttempt time.Time
+	loggedOut            bool
+	supervising          bool
+
 	// Pairing state
 	pairingMutex      sync.Mutex
 	pairingInProgress bool
@@ -123,6 +132,8 @@ func NewClientWithConfig(logger waLog.Logger, cfg *config.Config) (*Client, erro
 		logger.Warnf("AutoReconnect: attempt %d (%v)", count, failure)
 		return true
 	}
+
+	c.installDialer()
 
 	return c, nil
 }
@@ -484,13 +495,17 @@ func (c *Client) UnarchiveChat(chatJID string) error {
 
 // Connection state tracking methods
 
-// MarkConnected records a successful connection event.
+// MarkConnected records a successful connection event and ends the current
+// outage: reconnect_attempts is scoped to one outage, so it resets here.
 func (c *Client) MarkConnected() {
 	c.connMu.Lock()
 	defer c.connMu.Unlock()
 	c.lastConnectedAt = time.Now()
 	c.disconnectedAt = time.Time{}
 	c.autoReconnectErrors = 0
+	c.reconnectAttempts = 0
+	c.reconnectFailure = ""
+	c.loggedOut = false
 }
 
 // MarkDisconnected records a disconnection event.

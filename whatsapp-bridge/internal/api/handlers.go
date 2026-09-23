@@ -51,6 +51,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Send the message
 	result := s.client.SendMessage(s.messageStore, req.Recipient, req.Message, req.MediaPath, req.LinkPreview)
+	if result.Success {
+		s.client.MarkSuccessfulSend()
+	}
 
 	// Set response headers
 	w.Header().Set("Content-Type", "application/json")
@@ -1632,23 +1635,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connected := s.client.IsConnected()
-	startedAt, lastConn, discAt, reconnErrs := s.client.ConnectionState()
-
-	resp := map[string]interface{}{
-		"connected":      connected,
-		"uptime":         time.Since(startedAt).Round(time.Second).String(),
-		"reconnect_errs": reconnErrs,
-	}
-	if !lastConn.IsZero() {
-		resp["last_connected"] = lastConn.Format(time.RFC3339)
-	}
-	if !discAt.IsZero() {
-		resp["disconnected_for"] = time.Since(discAt).Round(time.Second).String()
-	}
+	snap := s.client.Snapshot()
+	resp := buildHealthPayload(snap, time.Now())
 
 	w.Header().Set("Content-Type", "application/json")
-	if !connected {
+	if !snap.Connected {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(w).Encode(resp)
@@ -1686,26 +1677,38 @@ func (s *Server) handleConnectionStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	connected := s.client.IsConnected()
+	snap := s.client.Snapshot()
 	linked := s.client.Store.ID != nil
-	startedAt, lastConn, discAt, reconnErrs := s.client.ConnectionState()
 
 	resp := types.ConnectionStatusResponse{
-		Success:             true,
-		Connected:           connected,
-		Linked:              linked,
-		Uptime:              time.Since(startedAt).Round(time.Second).String(),
-		AutoReconnectErrors: reconnErrs,
+		Success:                true,
+		Connected:              snap.Connected,
+		State:                  snap.State,
+		Linked:                 linked,
+		Uptime:                 time.Since(snap.StartedAt).Round(time.Second).String(),
+		AutoReconnectErrors:    snap.AutoReconnectErrors,
+		ReconnectAttempts:      snap.ReconnectAttempts,
+		ReconnectFailureReason: snap.ReconnectFailureReason,
 	}
 
 	if linked {
 		resp.JID = s.client.Store.ID.String()
 	}
-	if !lastConn.IsZero() {
-		resp.LastConnected = lastConn.Format(time.RFC3339)
+	if !snap.LastConnected.IsZero() {
+		resp.LastConnected = snap.LastConnected.Format(time.RFC3339)
 	}
-	if !discAt.IsZero() {
-		resp.DisconnectedFor = time.Since(discAt).Round(time.Second).String()
+	if !snap.DisconnectedSince.IsZero() {
+		resp.DisconnectedSince = snap.DisconnectedSince.Format(time.RFC3339)
+		resp.DisconnectedFor = time.Since(snap.DisconnectedSince).Round(time.Second).String()
+	}
+	if !snap.LastSuccessfulSend.IsZero() {
+		resp.LastSuccessfulSend = snap.LastSuccessfulSend.Format(time.RFC3339)
+	}
+	if !snap.LastReceipt.IsZero() {
+		resp.LastReceipt = snap.LastReceipt.Format(time.RFC3339)
+	}
+	if !snap.ReconnectLastAttemptAt.IsZero() {
+		resp.ReconnectLastAttemptAt = snap.ReconnectLastAttemptAt.Format(time.RFC3339)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
