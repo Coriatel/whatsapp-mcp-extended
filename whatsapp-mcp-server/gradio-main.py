@@ -186,7 +186,7 @@ def contact_last_activity(phone: str) -> str:
     Parameters:
     - phone: digits only, international, no plus sign (e.g. 972501234567)
 
-    Returns JSON: {"match": false} | {"match": true, "last_at": ISO 8601, "last_from": "me"|"them"} | {"error": "bad_phone"|"busy"}
+    Returns JSON: {"match": false} | {"match": true, "last_at": ISO 8601, "last_from": "me"|"them"|null}  (null: the last event is not stored, who wrote is unknown) | {"error": "bad_phone"|"busy"}
     """
     import json
 

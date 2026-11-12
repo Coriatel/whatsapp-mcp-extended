@@ -128,4 +128,15 @@ def test_a_long_walk_is_cut_off(store, monkeypatch):
         ca.contact_last_activity(PHONE, *store)
     assert time.monotonic() - start < 1
     monkeypatch.setattr(ca, "RUN_S", 5.0)
-    assert ca.contact_last_activity(PHONE, *store) == {"match": False}   # no such message: no match, not a guess
+    assert ca.contact_last_activity(PHONE, *store) == {
+        "match": True, "last_at": "2026-11-12T11:00:00+02:00", "last_from": None}   # the chat is there; who wrote is not guessed
+
+
+def test_a_chat_whose_last_event_is_not_stored_has_no_direction(store):
+    add(store[0], f"{LID}@lid", "2026-11-10 09:00:00+02:00", 1)
+    conn = sqlite3.connect(store[0])
+    conn.execute("UPDATE chats SET last_message_time = ? WHERE jid = ?", ("2026-11-12 11:00:00+02:00", f"{LID}@lid"))
+    conn.commit()
+    conn.close()
+    assert ca.contact_last_activity(PHONE, *store) == {
+        "match": True, "last_at": "2026-11-12T11:00:00+02:00", "last_from": None}

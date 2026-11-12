@@ -34,7 +34,12 @@ def _read_only(path: str) -> sqlite3.Connection:
 
 
 def contact_last_activity(phone: str, messages_db: str, whatsapp_db: str) -> dict[str, Any]:
-    """{"match": False} or {"match": True, "last_at": ISO 8601, "last_from": "me" | "them"}."""
+    """{"match": False} or {"match": True, "last_at": ISO 8601, "last_from": "me" | "them" | None}.
+
+    last_from is None when the store holds no message at the chat's last time (the last event was
+    something the bridge does not keep, or the chat came from a history sync without its messages):
+    the chat and its time are known, who wrote is not, and it is not guessed from an older message.
+    """
     if not isinstance(phone, str) or not PHONE.fullmatch(phone):
         raise ValueError("phone: digits only, international, no plus sign")
     jids = [f"{phone}@s.whatsapp.net"]
@@ -61,12 +66,10 @@ def contact_last_activity(phone: str, messages_db: str, whatsapp_db: str) -> dic
             conn.close()
     except sqlite3.Error as exc:
         raise StoreBusy(type(exc).__name__) from None
-    if not last:
-        return {"match": False}
     try:
         at = datetime.fromisoformat(chat[1])
     except (TypeError, ValueError):
         return {"match": False}
     if at.tzinfo is None:
         return {"match": False}
-    return {"match": True, "last_at": at.isoformat(), "last_from": "me" if last[0] else "them"}
+    return {"match": True, "last_at": at.isoformat(), "last_from": None if not last else "me" if last[0] else "them"}
