@@ -180,6 +180,28 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> str:
     return str(chat)
 
 @mcp.tool()
+def contact_last_activity(phone: str) -> str:
+    """When the last one-to-one message with a phone number was, and who wrote it. No message text.
+
+    Parameters:
+    - phone: digits only, international, no plus sign (e.g. 972501234567)
+
+    Returns JSON: {"match": false} | {"match": true, "last_at": ISO 8601, "last_from": "me"|"them"|null}  (null: the last event is not stored, who wrote is unknown) | {"error": "bad_phone"|"busy"}
+    """
+    import json
+
+    from contact_activity import StoreBusy
+    from contact_activity import contact_last_activity as read
+    from whatsapp import MESSAGES_DB_PATH, WHATSAPP_DB_PATH
+    try:
+        return json.dumps(read(phone, MESSAGES_DB_PATH, WHATSAPP_DB_PATH))
+    except ValueError:
+        return json.dumps({"error": "bad_phone"})
+    except StoreBusy:
+        return json.dumps({"error": "busy"})
+
+
+@mcp.tool()
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> str:
     """Get all WhatsApp chats involving the contact.
     
