@@ -140,3 +140,28 @@ def test_a_chat_whose_last_event_is_not_stored_has_no_direction(store):
     conn.close()
     assert ca.contact_last_activity(PHONE, *store) == {
         "match": True, "last_at": "2026-11-12T11:00:00+02:00", "last_from": None}
+
+
+def test_lid_phones_names_what_the_store_knows(store):
+    _, whatsapp = store
+    assert ca.lid_phones([LID, "222222222222222"], whatsapp) == {LID: PHONE}
+    assert ca.lid_phones([], whatsapp) == {}
+
+
+@pytest.mark.parametrize("bad", ["111", ["12a45"], ["1' OR '1'='1"], [LID, 5], ["1" * 21], ["11111"] * 201])
+def test_lid_phones_refuses_anything_but_digit_ids(bad):
+    with pytest.raises(ValueError):
+        ca.lid_phones(bad, "/nonexistent/whatsapp.db")
+
+
+def test_lid_phones_unreadable_store_is_busy_not_a_crash():
+    with pytest.raises(ca.StoreBusy):
+        ca.lid_phones([LID], "/nonexistent/whatsapp.db")
+
+
+def test_lid_phones_never_writes(store):
+    _, whatsapp = store
+    conn = ca._read_only(whatsapp)
+    with pytest.raises(sqlite3.OperationalError):
+        conn.execute("DELETE FROM whatsmeow_lid_map")
+    conn.close()

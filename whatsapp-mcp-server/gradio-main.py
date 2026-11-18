@@ -202,6 +202,27 @@ def contact_last_activity(phone: str) -> str:
 
 
 @mcp.tool()
+def chat_phones(lids: list[str]) -> str:
+    """The phone number behind hidden one-to-one chat ids (the digits before @lid). Numbers only.
+
+    Parameters:
+    - lids: up to 200 hidden ids, digits only (e.g. ["111111111111111"])
+
+    Returns JSON: {"phones": {lid: phone}} (an id the store cannot name is left out) | {"error": "bad_lids"|"busy"}
+    """
+    import json
+
+    from contact_activity import StoreBusy, lid_phones
+    from whatsapp import WHATSAPP_DB_PATH
+    try:
+        return json.dumps({"phones": lid_phones(lids, WHATSAPP_DB_PATH)})
+    except ValueError:
+        return json.dumps({"error": "bad_lids"})
+    except StoreBusy:
+        return json.dumps({"error": "busy"})
+
+
+@mcp.tool()
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> str:
     """Get all WhatsApp chats involving the contact.
     

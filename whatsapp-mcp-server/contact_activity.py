@@ -73,3 +73,28 @@ def contact_last_activity(phone: str, messages_db: str, whatsapp_db: str) -> dic
     if at.tzinfo is None:
         return {"match": False}
     return {"match": True, "last_at": at.isoformat(), "last_from": None if not last else "me" if last[0] else "them"}
+
+
+LID = re.compile(r"[0-9]{5,20}")
+LIDS_MAX = 200
+
+
+def lid_phones(lids: list, whatsapp_db: str) -> dict[str, str]:
+    """{hidden id: phone number} for those the store can name; an id it cannot name is left out.
+
+    The other direction of the same map contact_last_activity reads. Numbers only: no name and no message.
+    """
+    if not isinstance(lids, list) or len(lids) > LIDS_MAX or not all(isinstance(x, str) and LID.fullmatch(x) for x in lids):
+        raise ValueError(f"lids: up to {LIDS_MAX} hidden ids, digits only")
+    if not lids:
+        return {}
+    try:
+        conn = _read_only(whatsapp_db)
+        try:
+            rows = conn.execute(
+                f"SELECT lid, pn FROM whatsmeow_lid_map WHERE lid IN ({','.join('?' * len(lids))})", lids).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise StoreBusy(type(exc).__name__) from None
+    return {lid: pn for lid, pn in rows if isinstance(pn, str) and PHONE.fullmatch(pn)}
