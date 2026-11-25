@@ -90,6 +90,7 @@ class Chat:
     last_message_id: str | None = None
     last_sender: str | None = None
     last_is_from_me: bool | None = None
+    last_read_time: datetime | None = None
 
     @property
     def is_group(self) -> bool:
@@ -107,6 +108,7 @@ class Chat:
             "last_message_id": self.last_message_id,
             "last_sender": self.last_sender,
             "last_is_from_me": self.last_is_from_me,
+            "last_read_time": self.last_read_time.isoformat() if self.last_read_time else None,
         }
 
 @dataclass
@@ -489,9 +491,11 @@ def list_chats(
                 messages.content as last_message,
                 messages.id as last_message_id,
                 messages.sender as last_sender,
-                messages.is_from_me as last_is_from_me
+                messages.is_from_me as last_is_from_me,
+                {read} as last_read_time
             FROM chats
-        """]
+        """.format(read="(SELECT read_at FROM chat_reads WHERE chat_reads.chat_jid = chats.jid)"
+                     if ("chat_reads",) in tables else "NULL")]
         
         if include_last_message:
             query_parts.append("""
@@ -530,7 +534,8 @@ def list_chats(
                 last_message=chat_data[3],
                 last_message_id=chat_data[4],
                 last_sender=chat_data[5],
-                last_is_from_me=chat_data[6]
+                last_is_from_me=chat_data[6],
+                last_read_time=datetime.fromisoformat(chat_data[7]) if chat_data[7] else None,
             )
             result.append(chat.to_dict())
 
