@@ -460,7 +460,7 @@ func signReceipt(secret, ts string, body []byte) string {
 // under both of its ids when the store knows the other one, so a chat listed by its phone-number
 // id and read by its private id (or the reverse) still matches.
 func (c *Client) RecordReadSelf(store *database.MessageStore, receipt *events.Receipt) {
-	if receipt.Type != types.ReceiptTypeReadSelf || receipt.Chat.IsEmpty() || receipt.Timestamp.IsZero() {
+	if !ownRead(receipt) || receipt.Chat.IsEmpty() || receipt.Timestamp.IsZero() {
 		return
 	}
 	chat := receipt.Chat.ToNonAD()
@@ -483,4 +483,17 @@ func (c *Client) RecordReadSelf(store *database.MessageStore, receipt *events.Re
 			c.logger.Warnf("read-self time not kept: %v", err)
 		}
 	}
+}
+
+// ownRead reports whether this account itself read the chat on another of its devices. With read
+// receipts on in his privacy settings WhatsApp sends a plain "read" receipt from his own id; with
+// them off it sends "read-self" (whatsmeow types/presence.go). Someone else's read is neither.
+func ownRead(receipt *events.Receipt) bool {
+	switch receipt.Type {
+	case types.ReceiptTypeReadSelf:
+		return true
+	case types.ReceiptTypeRead:
+		return receipt.IsFromMe
+	}
+	return false
 }
