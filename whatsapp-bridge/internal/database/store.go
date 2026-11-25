@@ -84,6 +84,11 @@ func createTables(db *sql.DB) error {
 			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 		);
 
+		CREATE TABLE IF NOT EXISTS chat_reads (
+			chat_jid TEXT PRIMARY KEY,
+			read_at TIMESTAMP
+		);
+
 		CREATE TABLE IF NOT EXISTS contact_nicknames (
 			jid TEXT PRIMARY KEY,
 			nickname TEXT NOT NULL,

@@ -105,3 +105,12 @@ func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 
 	return chats, nil
 }
+
+// MarkChatRead keeps when this account last read a chat on one of its own devices (a read-self
+// receipt). Only the chat and the time are kept: never which message, never its text.
+func (store *MessageStore) MarkChatRead(chatJID string, at time.Time) error {
+	_, err := store.db.Exec(`INSERT INTO chat_reads (chat_jid, read_at) VALUES (?, ?)
+		ON CONFLICT(chat_jid) DO UPDATE SET read_at = MAX(read_at, excluded.read_at)`,
+		chatJID, at.UTC().Truncate(time.Second))
+	return err
+}

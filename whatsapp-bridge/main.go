@@ -70,6 +70,7 @@ func main() {
 		case *events.Receipt:
 			// Forward delivery/read receipts to the receipts webhook (S3)
 			client.HandleReceipt(v)
+			client.RecordReadSelf(messageStore, v)
 
 		case *events.HistorySync:
 			// Process history sync events with detailed logging

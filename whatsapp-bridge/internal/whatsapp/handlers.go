@@ -454,3 +454,33 @@ func signReceipt(secret, ts string, body []byte) string {
 	mac.Write(body)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
+
+// RecordReadSelf keeps the time this account read a chat on its phone (owner 2026-11-25: what he
+// already read in WhatsApp is not shown to him again as something to handle). The chat is kept
+// under both of its ids when the store knows the other one, so a chat listed by its phone-number
+// id and read by its private id (or the reverse) still matches.
+func (c *Client) RecordReadSelf(store *database.MessageStore, receipt *events.Receipt) {
+	if receipt.Type != types.ReceiptTypeReadSelf || receipt.Chat.IsEmpty() || receipt.Timestamp.IsZero() {
+		return
+	}
+	chat := receipt.Chat.ToNonAD()
+	ids := []types.JID{chat}
+	if c.Client != nil && c.Store != nil && c.Store.LIDs != nil {
+		ctx := context.Background()
+		switch chat.Server {
+		case types.DefaultUserServer:
+			if lid, err := c.Store.LIDs.GetLIDForPN(ctx, chat); err == nil && !lid.IsEmpty() {
+				ids = append(ids, lid.ToNonAD())
+			}
+		case types.HiddenUserServer:
+			if pn, err := c.Store.LIDs.GetPNForLID(ctx, chat); err == nil && !pn.IsEmpty() {
+				ids = append(ids, pn.ToNonAD())
+			}
+		}
+	}
+	for _, id := range ids {
+		if err := store.MarkChatRead(id.String(), receipt.Timestamp); err != nil {
+			c.logger.Warnf("read-self time not kept: %v", err)
+		}
+	}
+}
