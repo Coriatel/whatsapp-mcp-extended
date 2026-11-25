@@ -454,6 +454,14 @@ def get_message_context(
             conn.close()
 
 
+def _read_time(raw: Any) -> datetime | None:
+    """chat_reads.read_at as a time; an unreadable value is no read time, never an error for the whole list."""
+    try:
+        return datetime.fromisoformat(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
 def list_chats(
     query: str | None = None,
     limit: int = 20,
@@ -535,7 +543,7 @@ def list_chats(
                 last_message_id=chat_data[4],
                 last_sender=chat_data[5],
                 last_is_from_me=chat_data[6],
-                last_read_time=datetime.fromisoformat(chat_data[7]) if chat_data[7] else None,
+                last_read_time=_read_time(chat_data[7]),
             )
             result.append(chat.to_dict())
 

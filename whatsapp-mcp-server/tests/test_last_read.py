@@ -29,3 +29,14 @@ def test_last_read_time(tmp_path, monkeypatch, with_reads):
     rows = {r["jid"]: r for r in whatsapp.list_chats(limit=10)}
     assert rows["a@lid"]["last_read_time"] == ("2026-11-25T10:05:00+00:00" if with_reads else None)
     assert rows["b@lid"]["last_read_time"] is None
+
+
+def test_bad_read_time_is_none(tmp_path, monkeypatch):
+    db = str(tmp_path / "messages.db")
+    make(db, True)
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE chat_reads SET read_at = 'not a time'")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(whatsapp, "MESSAGES_DB_PATH", db)
+    assert {r["jid"]: r for r in whatsapp.list_chats(limit=10)}["a@lid"]["last_read_time"] is None
